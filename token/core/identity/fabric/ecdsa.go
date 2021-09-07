@@ -19,10 +19,11 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 	"github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/pkg/errors"
+
+	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 )
 
 var (
@@ -70,7 +71,7 @@ func (d *edsaVerifier) Verify(message, sigma []byte) error {
 	signature := &ecdsaSignature{}
 	_, err := asn1.Unmarshal(sigma, signature)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "failed unmarshalling signature [%v][%d]", sigma, len(sigma))
 	}
 
 	hash := sha256.New()

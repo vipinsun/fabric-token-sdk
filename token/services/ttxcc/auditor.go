@@ -122,6 +122,7 @@ func (a *AuditingViewInitiator) Call(context view.Context) (interface{}, error) 
 		return nil, errors.Wrapf(err, "failed verifying auditor signature")
 	}
 
+	logger.Debugf("Setting auditor signature to [%s]", hash.Hashable(msg.Payload).String())
 	a.tx.TokenRequest.SetAuditorSignature(msg.Payload)
 
 	return nil, nil

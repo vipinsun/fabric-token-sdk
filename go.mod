@@ -16,7 +16,10 @@ require (
 	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751
 	github.com/consensys/gurvy v0.3.9-0.20210209011448-37644c45f955
 	github.com/dgraph-io/badger/v3 v3.2011.1
+	github.com/fsnotify/fsnotify v1.5.1 // indirect
 	github.com/golang/protobuf v1.5.2
+	github.com/google/addlicense v1.0.0 // indirect
+	github.com/gordonklaus/ineffassign v0.0.0-20210729092907-69aca2aeecd0 // indirect
 	github.com/hyperledger-labs/fabric-smart-client v0.0.0-20210716064650-0cf5eab4064a
 	github.com/hyperledger/fabric v1.4.0-rc1.0.20200930182727-344fda602252
 	github.com/hyperledger/fabric-amcl v0.0.0-20200424173818-327c9e2cf77a
@@ -30,6 +33,8 @@ require (
 	github.com/stretchr/testify v1.7.0
 	github.com/tedsuo/ifrit v0.0.0-20191009134036-9a97d0632f00
 	go.uber.org/atomic v1.7.0
+	golang.org/x/mod v0.5.0 // indirect
+	golang.org/x/sys v0.0.0-20210906170528-6f6e22806c34 // indirect
 	google.golang.org/grpc v1.36.1 // indirect
 	google.golang.org/protobuf v1.26.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0

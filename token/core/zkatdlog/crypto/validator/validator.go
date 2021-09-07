@@ -61,8 +61,10 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 	if len(v.pp.Auditor) != 0 {
 		signatures = append(signatures, tr.AuditorSignature)
 		signatures = append(signatures, tr.Signatures...)
+		logger.Debugf("number of signatures in request (auditor) [%d], [%s]", len(signatures), hash.Hashable(tr.AuditorSignature).String())
 	} else {
 		signatures = tr.Signatures
+		logger.Debugf("number of signatures in request (no auditor) [%d]", len(signatures))
 	}
 
 	backend := &backend{
@@ -263,8 +265,9 @@ func (b *backend) HasBeenSignedBy(id view.Identity, verifier driver.Verifier) er
 		return errors.Errorf("invalid state, insufficient number of signatures")
 	}
 	sigma := b.signatures[b.index]
-	b.index++
+	logger.Debugf("Has been signed by [%d][%s][%s]", b.index, hash.Hashable(b.message).String(), hash.Hashable(sigma).String())
 
+	b.index++
 	return verifier.Verify(b.message, sigma)
 }
 

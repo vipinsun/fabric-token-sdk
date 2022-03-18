@@ -3,38 +3,31 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package fabtoken
 
 import (
+	"bytes"
 	"encoding/json"
-
-	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-
 	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 	token2 "github.com/hyperledger-labs/fabric-token-sdk/token/token"
+	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 )
 
-type ValidationParameters interface {
-	AuditorIdentity() view.Identity
-}
-
 type Validator struct {
-	validationParameters ValidationParameters
-	deserializer         driver.Deserializer
+	pp           *PublicParams
+	deserializer driver.Deserializer
 }
 
-func NewValidator(validationParameters ValidationParameters, deserializer driver.Deserializer) *Validator {
+func NewValidator(pp *PublicParams, deserializer driver.Deserializer) *Validator {
 	return &Validator{
-		validationParameters: validationParameters,
-		deserializer:         deserializer,
+		pp:           pp,
+		deserializer: deserializer,
 	}
-}
-
-func (v *Validator) GetValidationParameters() ValidationParameters {
-	return v.validationParameters
 }
 
 func (v *Validator) VerifyTokenRequest(ledger driver.Ledger, signatureProvider driver.SignatureProvider, binding string, tr *driver.TokenRequest) ([]interface{}, error) {
@@ -70,7 +63,7 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 		return nil, errors.New("empty token request")
 	}
 	tr := &driver.TokenRequest{}
-	err := json.Unmarshal(raw, tr)
+	err := tr.FromBytes(raw)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal token request")
 	}
@@ -80,16 +73,18 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 	req := &driver.TokenRequest{}
 	req.Transfers = tr.Transfers
 	req.Issues = tr.Issues
-	bytes, err := json.Marshal(req)
+	bytes, err := req.Bytes()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to marshal signed token request"+err.Error())
 	}
 
-	logger.Debugf("cc tx-id [%s][%s]", hash.Hashable(bytes).String(), binding)
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("cc tx-id [%s][%s]", hash.Hashable(bytes).String(), binding)
+	}
 	signed := append(bytes, []byte(binding)...)
 	var signatures [][]byte
-	if len(v.validationParameters.AuditorIdentity()) != 0 {
-		signatures = append(signatures, tr.AuditorSignature)
+	if len(v.pp.AuditorIdentity()) != 0 {
+		signatures = append(signatures, tr.AuditorSignatures...)
 		signatures = append(signatures, tr.Signatures...)
 	} else {
 		signatures = tr.Signatures
@@ -104,13 +99,13 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 }
 
 func (v *Validator) VerifyAuditorSignature(signatureProvider driver.SignatureProvider) error {
-	if v.validationParameters.AuditorIdentity() != nil {
-		verifier, err := v.deserializer.GetAuditorVerifier(v.validationParameters.AuditorIdentity())
+	if v.pp.AuditorIdentity() != nil {
+		verifier, err := v.deserializer.GetAuditorVerifier(v.pp.AuditorIdentity())
 		if err != nil {
 			return errors.Errorf("failed to deserialize auditor's public key")
 		}
 
-		return signatureProvider.HasBeenSignedBy(v.validationParameters.AuditorIdentity(), verifier)
+		return signatureProvider.HasBeenSignedBy(v.pp.AuditorIdentity(), verifier)
 	}
 	return nil
 }
@@ -119,6 +114,21 @@ func (v *Validator) VerifyIssues(issues []*IssueAction, signatureProvider driver
 	for _, issue := range issues {
 		if err := v.verifyIssue(issue); err != nil {
 			return errors.Wrapf(err, "failed to verify issue action")
+		}
+
+		issuers := v.pp.Issuers
+		if len(issuers) != 0 {
+			// Check that issue.Issuers is in issuers
+			found := false
+			for _, issuer := range issuers {
+				if bytes.Equal(issue.Issuer, issuer) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.Errorf("issuer [%s] is not in issuers", issue.Issuer.String())
+			}
 		}
 
 		verifier, err := v.deserializer.GetIssuerVerifier(issue.Issuer)
@@ -231,6 +241,10 @@ func (b *backend) HasBeenSignedBy(id view.Identity, verifier driver.Verifier) er
 
 func (b *backend) GetState(key string) ([]byte, error) {
 	return b.getState(key)
+}
+
+func (b *backend) Signatures() [][]byte {
+	return b.signatures
 }
 
 func UnmarshalIssueTransferActions(tr *driver.TokenRequest, binding string) ([]*IssueAction, []*TransferAction, error) {

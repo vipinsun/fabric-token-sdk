@@ -6,11 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 package translator
 
 import (
+	"crypto/sha256"
 	"strconv"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/keys"
@@ -24,7 +24,8 @@ type Translator struct {
 	IssuingValidator IssuingValidator
 	RWSet            RWSet
 	TxID             string
-	counter          int
+	counter          uint64
+	sigCounter       uint64
 	namespace        string
 }
 
@@ -34,6 +35,7 @@ func New(issuingValidator IssuingValidator, txID string, rwSet RWSet, namespace 
 		RWSet:            rwSet,
 		TxID:             txID,
 		counter:          0,
+		sigCounter:       0,
 		namespace:        namespace,
 	}
 
@@ -60,23 +62,96 @@ func (w *Translator) Write(action interface{}) error {
 	return nil
 }
 
-func (w *Translator) CommitTokenRequest(raw []byte) error {
+func (w *Translator) CommitTokenRequest(raw []byte, storeHash bool) error {
 	key, err := keys.CreateTokenRequestKey(w.TxID)
 	if err != nil {
 		return errors.Errorf("can't create for token request '%s'", w.TxID)
 	}
 	tr, err := w.RWSet.GetState(w.namespace, key)
 	if err != nil {
-		return errors.Wrapf(err, "failed to write token request'%s'", w.TxID)
+		return errors.Wrapf(err, "failed to read token request'%s'", w.TxID)
 	}
-	if tr != nil {
+	if len(tr) != 0 {
 		return errors.Wrapf(errors.New("token request with same ID already exists"), "failed to write token request'%s'", w.TxID)
+	}
+	if storeHash {
+		hash := sha256.New()
+		n, err := hash.Write(raw)
+		if n != len(raw) {
+			return errors.Errorf("failed to write token request, hash failure '%s'", w.TxID)
+		}
+		if err != nil {
+			return errors.Wrapf(err, "failed to write token request, hash failure '%s'", w.TxID)
+		}
+		raw = hash.Sum(nil)
 	}
 	err = w.RWSet.SetState(w.namespace, key, raw)
 	if err != nil {
 		return errors.Wrapf(err, "failed to write token request'%s'", w.TxID)
 	}
 	return nil
+}
+
+func (w *Translator) ReadTokenRequest() ([]byte, error) {
+	key, err := keys.CreateTokenRequestKey(w.TxID)
+	if err != nil {
+		return nil, errors.Errorf("can't create for token request '%s'", w.TxID)
+	}
+	tr, err := w.RWSet.GetState(w.namespace, key)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to read token request'%s'", w.TxID)
+	}
+	return tr, nil
+}
+
+func (w *Translator) ReadSetupParameters() ([]byte, error) {
+	setupKey, err := keys.CreateSetupKey()
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to create setup key")
+	}
+	raw, err := w.RWSet.GetState(w.namespace, setupKey)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get setup parameters")
+	}
+	return raw, nil
+}
+
+func (w *Translator) QueryTokens(ids []*token2.ID) ([][]byte, error) {
+	var res [][]byte
+	var errs []error
+	for _, id := range ids {
+		outputID, err := keys.CreateTokenKey(id.TxId, id.Index)
+		if err != nil {
+			errs = append(errs, errors.Errorf("error creating output ID: %s", err))
+			continue
+			// return nil, errors.Errorf("error creating output ID: %s", err)
+		}
+		logger.Debugf("query state [%s:%s]", id, outputID)
+		bytes, err := w.RWSet.GetState(w.namespace, outputID)
+		if err != nil {
+			errs = append(errs, errors.Wrapf(err, "failed getting output for [%s]", outputID))
+			// return nil, errors.Wrapf(err, "failed getting output for [%s]", outputID)
+			continue
+		}
+		if len(bytes) == 0 {
+			errs = append(errs, errors.Errorf("output for key [%s] does not exist", outputID))
+			// return nil, errors.Errorf("output for key [%s] does not exist", outputID)
+			continue
+		}
+		res = append(res, bytes)
+	}
+	if len(errs) != 0 {
+		return nil, errors.Errorf("failed quering tokens [%v] with errs [%d][%v]", ids, len(errs), errs)
+	}
+	return res, nil
+}
+
+func (w *Translator) IsSigMetadataKey(k string) (bool, error) {
+	prefix, _, err := keys.SplitCompositeKey(k)
+	if err != nil {
+		return false, errors.Wrapf(err, "failed to split composite key [%s]", k)
+	}
+	return prefix == keys.SignaturePrefix, nil
 }
 
 func (w *Translator) checkProcess(action interface{}) error {
@@ -94,6 +169,8 @@ func (w *Translator) checkAction(tokenAction interface{}) error {
 		return w.checkTransfer(action)
 	case SetupAction:
 		return nil
+	case Signature:
+		return nil
 	default:
 		return errors.Errorf("unknown token action: %T", action)
 	}
@@ -109,7 +186,7 @@ func (w *Translator) checkIssue(issue IssueAction) error {
 	// check if the keys of issued tokens aren't already used.
 	// check is assigned owners are valid
 	for i := 0; i < issue.NumOutputs(); i++ {
-		err = w.checkTokenDoesNotExist(w.counter+i, w.TxID)
+		err = w.checkTokenDoesNotExist(w.counter+uint64(i), w.TxID)
 		if err != nil {
 			return err
 		}
@@ -147,7 +224,7 @@ func (w *Translator) checkTransfer(t TransferAction) error {
 	for i := 0; i < t.NumOutputs(); i++ {
 		if !t.IsRedeemAt(i) {
 			// this is not a redeemed output
-			err := w.checkTokenDoesNotExist(w.counter+i, w.TxID)
+			err := w.checkTokenDoesNotExist(w.counter+uint64(i), w.TxID)
 			if err != nil {
 				return err
 			}
@@ -157,7 +234,7 @@ func (w *Translator) checkTransfer(t TransferAction) error {
 	return nil
 }
 
-func (w *Translator) checkTokenDoesNotExist(index int, txID string) error {
+func (w *Translator) checkTokenDoesNotExist(index uint64, txID string) error {
 	tokenKey, err := keys.CreateTokenKey(txID, index)
 	if err != nil {
 		return errors.Wrapf(err, "error creating output ID")
@@ -198,6 +275,8 @@ func (w *Translator) commitAction(tokenAction interface{}) (err error) {
 		err = w.commitTransferAction(action)
 	case SetupAction:
 		err = w.commitSetupAction(action)
+	case Signature:
+		err = w.commitSignature(action)
 	}
 	return
 }
@@ -226,7 +305,7 @@ func (w *Translator) commitIssueAction(issueAction IssueAction) error {
 		return err
 	}
 	for i, output := range outputs {
-		outputID, err := keys.CreateTokenKey(w.TxID, base+i)
+		outputID, err := keys.CreateTokenKey(w.TxID, base+uint64(i))
 		if err != nil {
 			return errors.Errorf("error creating output ID: %s", err)
 		}
@@ -260,7 +339,7 @@ func (w *Translator) commitIssueAction(issueAction IssueAction) error {
 			return err
 		}
 	}
-	w.counter = w.counter + len(outputs)
+	w.counter = w.counter + uint64(len(outputs))
 	return nil
 }
 
@@ -270,7 +349,7 @@ func (w *Translator) commitTransferAction(transferAction TransferAction) error {
 	base := w.counter
 	for i := 0; i < transferAction.NumOutputs(); i++ {
 		if !transferAction.IsRedeemAt(i) {
-			outputID, err := keys.CreateTokenKey(w.TxID, base+i)
+			outputID, err := keys.CreateTokenKey(w.TxID, base+uint64(i))
 			if err != nil {
 				return errors.Errorf("error creating output ID: %s", err)
 			}
@@ -297,7 +376,39 @@ func (w *Translator) commitTransferAction(transferAction TransferAction) error {
 	if err != nil {
 		return err
 	}
-	w.counter = w.counter + transferAction.NumOutputs()
+	metadata := transferAction.GetMetadata()
+	if len(metadata) != 0 {
+		key, err := keys.CreateTransferActionMetadataKey(hash.Hashable(metadata).String())
+		if err != nil {
+			return errors.Wrapf(err, "failed constructing metadata key")
+		}
+		raw, err := w.RWSet.GetState(w.namespace, key)
+		if err != nil {
+			return err
+		}
+		if len(raw) != 0 {
+			return errors.Errorf("entry with transfer metadata key [%s] is already occupied by [%s]", key, string(raw))
+		}
+		if err := w.RWSet.SetState(w.namespace, key, metadata); err != nil {
+			return err
+		}
+	}
+	w.counter = w.counter + uint64(transferAction.NumOutputs())
+	return nil
+}
+
+func (w *Translator) commitSignature(sig Signature) error {
+	for k, value := range sig.Metadata() {
+		key, err := keys.CreateSigMetadataKey(w.TxID, w.sigCounter, k)
+		if err != nil {
+			return errors.Errorf("error creating output ID: %s", err)
+		}
+		err = w.RWSet.SetState(w.namespace, key, value)
+		if err != nil {
+			return errors.Wrapf(err, "error setting state for key [%s]", key)
+		}
+	}
+	w.sigCounter++
 	return nil
 }
 
@@ -327,46 +438,4 @@ func (w *Translator) spendTokens(ids []string, graphHiding bool) error {
 	}
 
 	return nil
-}
-
-func (w *Translator) ReadSetupParameters() ([]byte, error) {
-	setupKey, err := keys.CreateSetupKey()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to create setup key")
-	}
-	raw, err := w.RWSet.GetState(w.namespace, setupKey)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to get setup parameters")
-	}
-	return raw, nil
-}
-
-func (w *Translator) QueryTokens(ids []*token2.Id) ([][]byte, error) {
-	var res [][]byte
-	var errs []error
-	for _, id := range ids {
-		outputID, err := keys.CreateTokenKey(id.TxId, int(id.Index))
-		if err != nil {
-			errs = append(errs, errors.Errorf("error creating output ID: %s", err))
-			continue
-			// return nil, errors.Errorf("error creating output ID: %s", err)
-		}
-		logger.Debugf("query state [%s:%s]", id, outputID)
-		bytes, err := w.RWSet.GetState(w.namespace, outputID)
-		if err != nil {
-			errs = append(errs, errors.Wrapf(err, "failed getting output for [%s]", outputID))
-			// return nil, errors.Wrapf(err, "failed getting output for [%s]", outputID)
-			continue
-		}
-		if len(bytes) == 0 {
-			errs = append(errs, errors.Errorf("output for key [%s] does not exist", outputID))
-			// return nil, errors.Errorf("output for key [%s] does not exist", outputID)
-			continue
-		}
-		res = append(res, bytes)
-	}
-	if len(errs) != 0 {
-		return nil, errors.Errorf("failed quering tokens [%v] with errs [%d][%v]", ids, len(errs), errs)
-	}
-	return res, nil
 }

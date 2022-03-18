@@ -7,60 +7,104 @@ SPDX-License-Identifier: Apache-2.0
 package nogh
 
 import (
-	idemix2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/idemix"
-	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
+	"bytes"
+	"sync"
+
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/pkg/errors"
 
+	idemix2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/idemix"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity/fabric"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity/fabric/idemix"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity/fabric/x509"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 )
 
-type verifierProvider interface {
-	GetVerifier(id view.Identity) (driver.Verifier, error)
+type VerifierDES interface {
+	DeserializeVerifier(id view.Identity) (driver.Verifier, error)
 }
 
-type idemixProvider interface {
-	DeserializeVerifier(raw []byte) (driver2.Verifier, error)
+type AuditDES interface {
+	DeserializeAuditInfo(raw []byte) (driver.Matcher, error)
 }
 
 type deserializer struct {
-	auditorDeserializer verifierProvider
-	ownerDeserializer   verifierProvider
-	issuerDeserializer  verifierProvider
+	auditorDeserializer VerifierDES
+	ownerDeserializer   VerifierDES
+	issuerDeserializer  VerifierDES
+	auditDeserializer   AuditDES
 }
 
 func NewDeserializer(pp *crypto.PublicParams) (*deserializer, error) {
-	idemixDes, err := idemix2.NewDeserializer(pp.IdemixPK)
+	idemixDes, err := idemix.NewDeserializer(pp.IdemixPK, pp.IdemixCurve)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed getting idemix deserializer for passed public params")
 	}
 
 	return &deserializer{
-		auditorDeserializer: &fabric.MSPX509IdentityDeserializer{},
-		issuerDeserializer:  &fabric.MSPX509IdentityDeserializer{},
-		ownerDeserializer:   identity.NewRawOwnerIdentityDeserializer(&idemixDeserializer{provider: idemixDes}),
+		auditorDeserializer: &x509.MSPIdentityDeserializer{},
+		issuerDeserializer:  &x509.MSPIdentityDeserializer{},
+		ownerDeserializer:   identity.NewRawOwnerIdentityDeserializer(idemixDes),
+		auditDeserializer:   idemixDes,
 	}, nil
 }
 
 func (d *deserializer) GetOwnerVerifier(id view.Identity) (driver.Verifier, error) {
-	return d.ownerDeserializer.GetVerifier(id)
+	return d.ownerDeserializer.DeserializeVerifier(id)
 }
 
 func (d *deserializer) GetIssuerVerifier(id view.Identity) (driver.Verifier, error) {
-	return d.issuerDeserializer.GetVerifier(id)
+	return d.issuerDeserializer.DeserializeVerifier(id)
 }
 
 func (d *deserializer) GetAuditorVerifier(id view.Identity) (driver.Verifier, error) {
-	return d.auditorDeserializer.GetVerifier(id)
+	return d.auditorDeserializer.DeserializeVerifier(id)
 }
 
-type idemixDeserializer struct {
-	provider idemixProvider
+func (d *deserializer) GetOwnerMatcher(raw []byte) (driver.Matcher, error) {
+	return d.auditDeserializer.DeserializeAuditInfo(raw)
 }
 
-func (i *idemixDeserializer) GetVerifier(id view.Identity) (driver.Verifier, error) {
-	return i.provider.DeserializeVerifier(id)
+type DeserializerProvider struct {
+	oldHash []byte
+	des     *deserializer
+	mux     sync.Mutex
+}
+
+func NewDeserializerProvider() *DeserializerProvider {
+	return &DeserializerProvider{}
+}
+
+func (d *DeserializerProvider) Deserialize(params *crypto.PublicParams) (driver.Deserializer, error) {
+	d.mux.Lock()
+	defer d.mux.Unlock()
+
+	logger.Infof("Deserialize: [%s][%s]", params.Hash, d.oldHash)
+	if bytes.Equal(d.oldHash, params.Hash) {
+		return d.des, nil
+	}
+
+	des, err := NewDeserializer(params)
+	if err != nil {
+		return nil, err
+	}
+	d.des = des
+	d.oldHash = params.Hash
+	return des, nil
+}
+
+type enrollmentService struct {
+}
+
+func NewEnrollmentIDDeserializer() *enrollmentService {
+	return &enrollmentService{}
+}
+
+func (e *enrollmentService) GetEnrollmentID(auditInfo []byte) (string, error) {
+	ai := &idemix2.AuditInfo{}
+	if err := ai.FromBytes(auditInfo); err != nil {
+		return "", errors.Wrapf(err, "failed unamrshalling audit info [%s]", auditInfo)
+	}
+	return ai.EnrollmentID(), nil
 }

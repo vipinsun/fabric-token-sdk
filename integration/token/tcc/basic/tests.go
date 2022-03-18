@@ -21,7 +21,7 @@ import (
 )
 
 func TestAll(network *integration.Infrastructure) {
-	//registerIssuers(network)
+	// registerIssuers(network)
 	// registerCertifier(network)
 	registerAuditor(network)
 
@@ -30,6 +30,7 @@ func TestAll(network *integration.Infrastructure) {
 	checkBalance(network, "alice", "", "USD", 110)
 	issueCash(network, "", "USD", 10, "alice")
 	checkBalance(network, "alice", "", "USD", 120)
+	checkBalance(network, "alice", "alice", "USD", 120)
 
 	h := listIssuerHistory(network, "", "USD")
 	Expect(h.Count() > 0).To(BeTrue())
@@ -77,6 +78,7 @@ func TestAll(network *integration.Infrastructure) {
 	checkBalance(network, "alice", "", "USD", 10)
 	checkBalance(network, "alice", "", "EUR", 0)
 	checkBalance(network, "bob", "", "EUR", 30)
+	checkBalance(network, "bob", "bob", "EUR", 30)
 	checkBalance(network, "bob", "", "USD", 110)
 
 	swapCash(network, "alice", "", "USD", 10, "EUR", 10, "bob")
@@ -161,7 +163,7 @@ func TestAll(network *integration.Infrastructure) {
 	checkBalance(network, "alice", "", "USD", 0)
 	checkBalance(network, "alice", "", "EUR", 10)
 
-	//limits
+	// limits
 	checkBalance(network, "alice", "", "USD", 0)
 	checkBalance(network, "alice", "", "EUR", 10)
 	checkBalance(network, "bob", "", "EUR", 20)
@@ -197,7 +199,7 @@ func TestAll(network *integration.Infrastructure) {
 	checkBalance(network, "bob", "bob.id1", "EUR", 10)
 
 	// Concurrent transfers
-	concurrentTransfers := make([]chan error, 10)
+	concurrentTransfers := make([]chan error, 5)
 	var sum uint64
 	for i := range concurrentTransfers {
 		concurrentTransfers[i] = make(chan error, 1)
@@ -272,8 +274,10 @@ func TestAll(network *integration.Infrastructure) {
 
 	// Transfer by IDs
 	txID := issueCash(network, "", "CHF", 17, "alice")
-	txID = transferCashByIDs(network, "alice", "", []*token2.Id{{TxId: txID, Index: 0}}, 17, "bob")
-	redeemCashByIDs(network, "bob", "", []*token2.Id{{TxId: txID, Index: 0}}, 17)
+	transferCashByIDs(network, "alice", "", []*token2.ID{{TxId: txID, Index: 0}}, 17, "bob", true, "test release")
+	// the previous call should not keep the token locked if release is successful
+	txID = transferCashByIDs(network, "alice", "", []*token2.ID{{TxId: txID, Index: 0}}, 17, "bob", false)
+	redeemCashByIDs(network, "bob", "", []*token2.ID{{TxId: txID, Index: 0}}, 17)
 }
 
 /*
@@ -338,6 +342,7 @@ func transferCash(network *integration.Infrastructure, id string, wallet string,
 	if len(errorMsgs) == 0 {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(network.Client(receiver).IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
+		Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 	} else {
 		Expect(err).To(HaveOccurred())
 		for _, msg := range errorMsgs {
@@ -347,17 +352,19 @@ func transferCash(network *integration.Infrastructure, id string, wallet string,
 	}
 }
 
-func transferCashByIDs(network *integration.Infrastructure, id string, wallet string, ids []*token2.Id, amount uint64, receiver string, errorMsgs ...string) string {
+func transferCashByIDs(network *integration.Infrastructure, id string, wallet string, ids []*token2.ID, amount uint64, receiver string, failToRelease bool, errorMsgs ...string) string {
 	txid, err := network.Client(id).CallView("transfer", common.JSONMarshall(&views.Transfer{
-		Wallet:    wallet,
-		Type:      "",
-		TokenIDs:  ids,
-		Amount:    amount,
-		Recipient: network.Identity(receiver),
+		Wallet:        wallet,
+		Type:          "",
+		TokenIDs:      ids,
+		Amount:        amount,
+		Recipient:     network.Identity(receiver),
+		FailToRelease: failToRelease,
 	}))
 	if len(errorMsgs) == 0 {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(network.Client(receiver).IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
+		Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 		return common.JSONUnmarshalString(txid)
 	} else {
 		Expect(err).To(HaveOccurred())
@@ -379,6 +386,7 @@ func transferCashWithSelector(network *integration.Infrastructure, id string, wa
 	if len(errorMsgs) == 0 {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(network.Client(receiver).IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
+		Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 	} else {
 		Expect(err).To(HaveOccurred())
 		for _, msg := range errorMsgs {
@@ -389,22 +397,24 @@ func transferCashWithSelector(network *integration.Infrastructure, id string, wa
 }
 
 func redeemCash(network *integration.Infrastructure, id string, wallet string, typ string, amount uint64) {
-	_, err := network.Client(id).CallView("redeem", common.JSONMarshall(&views.Redeem{
+	txid, err := network.Client(id).CallView("redeem", common.JSONMarshall(&views.Redeem{
 		Wallet: wallet,
 		Type:   typ,
 		Amount: amount,
 	}))
 	Expect(err).NotTo(HaveOccurred())
+	Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 }
 
-func redeemCashByIDs(network *integration.Infrastructure, id string, wallet string, ids []*token2.Id, amount uint64) {
-	_, err := network.Client(id).CallView("redeem", common.JSONMarshall(&views.Redeem{
+func redeemCashByIDs(network *integration.Infrastructure, id string, wallet string, ids []*token2.ID, amount uint64) {
+	txid, err := network.Client(id).CallView("redeem", common.JSONMarshall(&views.Redeem{
 		Wallet:   wallet,
 		Type:     "",
 		TokenIDs: ids,
 		Amount:   amount,
 	}))
 	Expect(err).NotTo(HaveOccurred())
+	Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 }
 
 func swapCash(network *integration.Infrastructure, id string, wallet string, typeLeft string, amountLeft uint64, typRight string, amountRight uint64, receiver string) {
@@ -418,6 +428,7 @@ func swapCash(network *integration.Infrastructure, id string, wallet string, typ
 	}))
 	Expect(err).NotTo(HaveOccurred())
 	Expect(network.Client(receiver).IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
+	Expect(network.Client("auditor").IsTxFinal(common.JSONUnmarshalString(txid))).NotTo(HaveOccurred())
 }
 
 func checkBalance(network *integration.Infrastructure, id string, wallet string, typ string, expected uint64) {

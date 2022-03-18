@@ -3,31 +3,31 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package validator_test
 
 import (
+	"encoding/asn1"
 	"encoding/json"
 	"io/ioutil"
 	"time"
 
-	msp2 "github.com/hyperledger/fabric/msp"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
+	math "github.com/IBM/mathlib"
 	idemix2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/idemix"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/core/sig"
 	_ "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/memory"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs"
 	registry2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/registry"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	msp2 "github.com/hyperledger/fabric/msp"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/audit"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/ecdsa"
 	issue2 "github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue/anonym"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue/nonanonym"
 	tokn "github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/transfer"
@@ -39,25 +39,34 @@ import (
 
 var fakeldger *mock.Ledger
 
+type idemix interface {
+	DeserializeAuditInfo(raw []byte) (*idemix2.AuditInfo, error)
+}
+
+type deserializer struct {
+	idemix idemix
+}
+
+func (d *deserializer) GetOwnerMatcher(raw []byte) (driver.Matcher, error) {
+	return d.idemix.DeserializeAuditInfo(raw)
+}
+
 var _ = Describe("validator", func() {
 	var (
-		engine  *enginedlog.Validator
-		pp      *crypto.PublicParams
-		issuers []*bn256.G1
+		engine *enginedlog.Validator
+		pp     *crypto.PublicParams
 
 		inputsForRedeem   []*tokn.Token
 		inputsForTransfer []*tokn.Token
 
-		anonymissuer *anonym.Issuer
-		sender       *transfer.Sender
-		auditor      *audit.Auditor
-		ipk          []byte
+		sender  *transfer.Sender
+		auditor *audit.Auditor
+		ipk     []byte
 
-		air *driver.TokenRequest // anonymous issue request
-		ir  *driver.TokenRequest // regular issue request
-		rr  *driver.TokenRequest // redeem request
-		tr  *driver.TokenRequest // transfer request
-		ar  *driver.TokenRequest // atomic action request
+		ir *driver.TokenRequest // regular issue request
+		rr *driver.TokenRequest // redeem request
+		tr *driver.TokenRequest // transfer request
+		ar *driver.TokenRequest // atomic action request
 	)
 	BeforeEach(func() {
 		fakeldger = &mock.Ledger{}
@@ -65,23 +74,15 @@ var _ = Describe("validator", func() {
 		// prepare public parameters
 		ipk, err = ioutil.ReadFile("./testdata/idemix/msp/IssuerPublicKey")
 		Expect(err).NotTo(HaveOccurred())
-		pp, err = crypto.Setup(100, 2, ipk)
+		pp, err = crypto.Setup(100, 2, ipk, math.FP256BN_AMCL)
 		Expect(err).NotTo(HaveOccurred())
 
-		//prepare issuers' public keys
-		sk, pk, err := anonym.GenerateKeyPair("ABC", pp)
-		Expect(sk).NotTo(BeNil())
-		Expect(err).NotTo(HaveOccurred())
-
-		// there are two issuers whereby issuers[1] has secret key sk and issues tokens of type ttype
-		issuers = getIssuers(2, 1, pk, pp.ZKATPedParams)
-		err = pp.AddIssuer(issuers[0])
-		Expect(err).NotTo(HaveOccurred())
-		err = pp.AddIssuer(issuers[1])
-		Expect(err).NotTo(HaveOccurred())
+		c := math.Curves[pp.Curve]
 
 		asigner, _ := prepareECDSASigner()
-		auditor = &audit.Auditor{Signer: asigner, PedersenParams: pp.ZKATPedParams, NYMParams: pp.IdemixPK}
+		des, err := idemix2.NewDeserializer(pp.IdemixPK)
+		Expect(err).NotTo(HaveOccurred())
+		auditor = audit.NewAuditor(&deserializer{idemix: des}, pp.ZKATPedParams, pp.IdemixPK, asigner, c)
 		araw, err := asigner.Serialize()
 		Expect(err).NotTo(HaveOccurred())
 		pp.Auditor = araw
@@ -95,12 +96,6 @@ var _ = Describe("validator", func() {
 		_, ir, _ = prepareNonAnonymousIssueRequest(pp, auditor)
 		Expect(ir).NotTo(BeNil())
 
-		// anonymous issue request metadata
-		var imetadata *driver.TokenRequestMetadata
-		anonymissuer, air, imetadata = prepareAnonymousIssueRequest(sk, pp, auditor)
-		Expect(anonymissuer).NotTo(BeNil())
-		Expect(imetadata).NotTo(BeNil())
-
 		// prepare redeem
 		sender, rr, _, inputsForRedeem = prepareRedeemRequest(pp, auditor)
 		Expect(sender).NotTo(BeNil())
@@ -112,12 +107,8 @@ var _ = Describe("validator", func() {
 		Expect(trmetadata).NotTo(BeNil())
 
 		// atomic action request
-		ar = &driver.TokenRequest{Issues: air.Issues, Transfers: tr.Transfers}
-		raw, err := json.Marshal(ar)
-		Expect(err).NotTo(HaveOccurred())
-
-		// anonymissuer signs request
-		signature, err := anonymissuer.SignTokenActions(raw, "2")
+		ar = &driver.TokenRequest{Transfers: tr.Transfers}
+		raw, err := asn1.Marshal(*ar)
 		Expect(err).NotTo(HaveOccurred())
 
 		// sender signs request
@@ -127,7 +118,6 @@ var _ = Describe("validator", func() {
 		// auditor inspect token
 		metadata := &driver.TokenRequestMetadata{}
 		metadata.Transfers = []driver.TransferMetadata{trmetadata.Transfers[0]}
-		metadata.Issues = []driver.IssueMetadata{imetadata.Issues[0]}
 
 		tokns := make([][]*tokn.Token, 1)
 		for i := 0; i < 2; i++ {
@@ -135,36 +125,20 @@ var _ = Describe("validator", func() {
 		}
 		err = auditor.Check(ar, metadata, tokns, "2")
 		Expect(err).NotTo(HaveOccurred())
-		ar.AuditorSignature, err = auditor.Endorse(ar, "2")
+		sigma, err := auditor.Endorse(ar, "2")
 		Expect(err).NotTo(HaveOccurred())
+		ar.AuditorSignatures = append(ar.AuditorSignatures, sigma)
 
-		ar.Signatures = append(ar.Signatures, signature)
 		ar.Signatures = append(ar.Signatures, signatures...)
 	})
 	Describe("Verify Token Requests", func() {
-		Context("Validator is called correctly with an anonymous issue action", func() {
-			var (
-				raw []byte
-				err error
-			)
-			BeforeEach(func() {
-				raw, err = json.Marshal(air)
-				Expect(err).NotTo(HaveOccurred())
-			})
-			It("succeeds", func() {
-				actions, err := engine.VerifyTokenRequestFromRaw(fakeldger.GetStateStub, "1", raw)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(actions)).To(Equal(1))
-			})
-		})
-
 		Context("Validator is called correctly with a non-anonymous issue action", func() {
 			var (
 				err error
 				raw []byte
 			)
 			BeforeEach(func() {
-				raw, err = json.Marshal(ir)
+				raw, err = asn1.Marshal(*ir)
 				Expect(err).NotTo(HaveOccurred())
 			})
 			It("succeeds", func() {
@@ -199,7 +173,7 @@ var _ = Describe("validator", func() {
 				fakeldger.GetStateReturnsOnCall(4, nil, nil)
 				fakeldger.GetStateReturnsOnCall(5, nil, nil)
 
-				raw, err = json.Marshal(tr)
+				raw, err = asn1.Marshal(*tr)
 				Expect(err).NotTo(HaveOccurred())
 			})
 			It("succeeds", func() {
@@ -233,7 +207,7 @@ var _ = Describe("validator", func() {
 
 				fakeldger.GetStateReturnsOnCall(4, nil, nil)
 
-				raw, err = json.Marshal(rr)
+				raw, err = asn1.Marshal(*rr)
 				Expect(err).NotTo(HaveOccurred())
 
 			})
@@ -270,41 +244,27 @@ var _ = Describe("validator", func() {
 				fakeldger.GetStateReturnsOnCall(5, nil, nil)
 				fakeldger.GetStateReturnsOnCall(6, nil, nil)
 
-				raw, err = json.Marshal(ar)
+				raw, err = asn1.Marshal(*ar)
 				Expect(err).NotTo(HaveOccurred())
 
 			})
 			It("succeeds", func() {
 				actions, err := engine.VerifyTokenRequestFromRaw(getState, "2", raw)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(len(actions)).To(Equal(2))
+				Expect(len(actions)).To(Equal(1))
 			})
 
-			Context("When the anonymissuer's signature is not valid: wrong txID", func() {
-				BeforeEach(func() {
-					request := &driver.TokenRequest{Issues: ar.Issues, Transfers: ar.Transfers}
-					raw, err = json.Marshal(request)
-					Expect(err).NotTo(HaveOccurred())
-					ar.Signatures[0], err = anonymissuer.SignTokenActions(raw, "3")
-					raw, err = json.Marshal(ar)
-					Expect(err).NotTo(HaveOccurred())
-				})
-				It("fails", func() {
-					_, err := engine.VerifyTokenRequestFromRaw(getState, "2", raw)
-					Expect(err.Error()).To(ContainSubstring("failed to verify issuers' signatures"))
-				})
-			})
 			Context("when the sender's signature is not valid: wrong txID", func() {
 				BeforeEach(func() {
 					request := &driver.TokenRequest{Issues: ar.Issues, Transfers: ar.Transfers}
-					raw, err = json.Marshal(request)
+					raw, err = asn1.Marshal(*request)
 					Expect(err).NotTo(HaveOccurred())
 
 					signatures, err := sender.SignTokenActions(raw, "3")
 					Expect(err).NotTo(HaveOccurred())
 					ar.Signatures[1] = signatures[0]
 
-					raw, err = json.Marshal(ar)
+					raw, err = asn1.Marshal(*ar)
 					Expect(err).NotTo(HaveOccurred())
 
 				})
@@ -335,17 +295,6 @@ func prepareNonAnonymousIssueRequest(pp *crypto.PublicParams, auditor *audit.Aud
 	return issuer, ir, metadata
 }
 
-func prepareAnonymousIssueRequest(sk *bn256.Zr, pp *crypto.PublicParams, auditor *audit.Auditor) (*anonym.Issuer, *driver.TokenRequest, *driver.TokenRequestMetadata) {
-	witness := anonym.NewWitness(sk, nil, nil, nil, nil, 1)
-
-	signer := anonym.NewSigner(witness, nil, nil, 1, pp.ZKATPedParams)
-	issuer := &anonym.Issuer{}
-	issuer.New("ABC", signer, pp)
-
-	ir, metadata := prepareIssue(auditor, issuer)
-	return issuer, ir, metadata
-}
-
 func prepareRedeemRequest(pp *crypto.PublicParams, auditor *audit.Auditor) (*transfer.Sender, *driver.TokenRequest, *driver.TokenRequestMetadata, []*tokn.Token) {
 	id, auditInfo, signer := getIdemixInfo("./testdata/idemix")
 	owners := make([][]byte, 2)
@@ -363,15 +312,15 @@ func prepareTransferRequest(pp *crypto.PublicParams, auditor *audit.Auditor) (*t
 	return prepareTransfer(pp, signer, auditor, auditInfo, id, owners)
 }
 
-func getIssuers(N, index int, pk *bn256.G1, pp []*bn256.G1) []*bn256.G1 {
-	rand, err := bn256.GetRand()
+func getIssuers(N, index int, pk *math.G1, pp []*math.G1, curve *math.Curve) []*math.G1 {
+	rand, err := curve.Rand()
 	Expect(err).NotTo(HaveOccurred())
-	issuers := make([]*bn256.G1, N)
+	issuers := make([]*math.G1, N)
 	issuers[index] = pk
 	for i := 0; i < N; i++ {
 		if i != index {
-			sk := bn256.RandModOrder(rand)
-			t := bn256.RandModOrder(rand)
+			sk := curve.NewRandomZr(rand)
+			t := curve.NewRandomZr(rand)
 			issuers[i] = pp[0].Mul(sk)
 			issuers[i].Add(pp[1].Mul(t))
 		}
@@ -381,17 +330,17 @@ func getIssuers(N, index int, pk *bn256.G1, pp []*bn256.G1) []*bn256.G1 {
 
 }
 
-func prepareTokens(values, bf []*bn256.Zr, ttype string, pp []*bn256.G1) []*bn256.G1 {
-	tokens := make([]*bn256.G1, len(values))
+func prepareTokens(values, bf []*math.Zr, ttype string, pp []*math.G1, curve *math.Curve) []*math.G1 {
+	tokens := make([]*math.G1, len(values))
 	for i := 0; i < len(values); i++ {
-		tokens[i] = prepareToken(values[i], bf[i], ttype, pp)
+		tokens[i] = prepareToken(values[i], bf[i], ttype, pp, curve)
 	}
 	return tokens
 }
 
-func prepareToken(value *bn256.Zr, rand *bn256.Zr, ttype string, pp []*bn256.G1) *bn256.G1 {
-	token := bn256.NewG1()
-	token.Add(pp[0].Mul(bn256.HashModOrder([]byte(ttype))))
+func prepareToken(value *math.Zr, rand *math.Zr, ttype string, pp []*math.G1, curve *math.Curve) *math.G1 {
+	token := curve.NewG1()
+	token.Add(pp[0].Mul(curve.HashToZr([]byte(ttype))))
 	token.Add(pp[1].Mul(value))
 	token.Add(pp[2].Mul(rand))
 	return token
@@ -451,23 +400,22 @@ func getIdemixInfo(dir string) (view.Identity, *idemix2.AuditInfo, driver.Signin
 	err = registry.RegisterService(kvss)
 	Expect(err).NotTo(HaveOccurred())
 
-	sigService := sig.NewSignService(registry, nil)
+	sigService := sig.NewSignService(registry, nil, kvss)
 	err = registry.RegisterService(sigService)
 	Expect(err).NotTo(HaveOccurred())
 	config, err := msp2.GetLocalMspConfigWithType(dir, nil, "idemix", "idemix")
 	Expect(err).NotTo(HaveOccurred())
 
-	p, err := idemix2.NewProvider(config, registry)
+	p, err := idemix2.NewEIDNymProvider(config, registry)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(p).NotTo(BeNil())
 
-	id, audit, err := p.Identity()
+	id, audit, err := p.Identity(nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(id).NotTo(BeNil())
 	Expect(audit).NotTo(BeNil())
 
-	auditInfo := &idemix2.AuditInfo{}
-	err = auditInfo.FromBytes(audit)
+	auditInfo, err := p.DeserializeAuditInfo(audit)
 	Expect(err).NotTo(HaveOccurred())
 	err = auditInfo.Match(id)
 	Expect(err).NotTo(HaveOccurred())
@@ -475,8 +423,7 @@ func getIdemixInfo(dir string) (view.Identity, *idemix2.AuditInfo, driver.Signin
 	signer, err := p.DeserializeSigningIdentity(id)
 	Expect(err).NotTo(HaveOccurred())
 
-	rawOwner := identity.RawOwner{Identity: id, Type: identity.SerializedIdentityType}
-	id, err = json.Marshal(rawOwner)
+	id, err = identity.MarshallRawOwner(&identity.RawOwner{Identity: id, Type: identity.SerializedIdentityType})
 	Expect(err).NotTo(HaveOccurred())
 
 	return id, auditInfo, signer
@@ -515,7 +462,7 @@ func prepareIssue(auditor *audit.Auditor, issuer issue2.Issuer) (*driver.TokenRe
 
 	// sign token request
 	ir = &driver.TokenRequest{Issues: [][]byte{raw}}
-	raw, err = json.Marshal(ir)
+	raw, err = asn1.Marshal(*ir)
 	Expect(err).NotTo(HaveOccurred())
 
 	sig, err := issuer.SignTokenActions(raw, "1")
@@ -525,8 +472,9 @@ func prepareIssue(auditor *audit.Auditor, issuer issue2.Issuer) (*driver.TokenRe
 	issueMetadata := &driver.TokenRequestMetadata{Issues: []driver.IssueMetadata{metadata}}
 	err = auditor.Check(ir, issueMetadata, nil, "1")
 	Expect(err).NotTo(HaveOccurred())
-	ir.AuditorSignature, err = auditor.Endorse(ir, "1")
+	sigma, err := auditor.Endorse(ir, "1")
 	Expect(err).NotTo(HaveOccurred())
+	ir.AuditorSignatures = append(ir.AuditorSignatures, sigma)
 
 	return ir, issueMetadata
 }
@@ -536,16 +484,17 @@ func prepareTransfer(pp *crypto.PublicParams, signer driver.SigningIdentity, aud
 	signers := make([]driver.Signer, 2)
 	signers[0] = signer
 	signers[1] = signer
+	c := math.Curves[pp.Curve]
 
-	invalues := make([]*bn256.Zr, 2)
-	invalues[0] = bn256.NewZrInt(70)
-	invalues[1] = bn256.NewZrInt(30)
+	invalues := make([]*math.Zr, 2)
+	invalues[0] = c.NewZrFromInt(70)
+	invalues[1] = c.NewZrFromInt(30)
 
-	inBF := make([]*bn256.Zr, 2)
-	rand, err := bn256.GetRand()
+	inBF := make([]*math.Zr, 2)
+	rand, err := c.Rand()
 	Expect(err).NotTo(HaveOccurred())
 	for i := 0; i < 2; i++ {
-		inBF[i] = bn256.RandModOrder(rand)
+		inBF[i] = c.NewRandomZr(rand)
 	}
 	outvalues := make([]uint64, 2)
 	outvalues[0] = 65
@@ -555,7 +504,7 @@ func prepareTransfer(pp *crypto.PublicParams, signer driver.SigningIdentity, aud
 	ids[0] = "0"
 	ids[1] = "1"
 
-	inputs := prepareTokens(invalues, inBF, "ABC", pp.ZKATPedParams)
+	inputs := prepareTokens(invalues, inBF, "ABC", pp.ZKATPedParams, c)
 	tokens := make([]*tokn.Token, 2)
 	tokens[0] = &tokn.Token{Data: inputs[0], Owner: id}
 	tokens[1] = &tokn.Token{Data: inputs[1], Owner: id}
@@ -573,7 +522,7 @@ func prepareTransfer(pp *crypto.PublicParams, signer driver.SigningIdentity, aud
 	Expect(err).NotTo(HaveOccurred())
 
 	tr := &driver.TokenRequest{Transfers: [][]byte{raw}}
-	raw, err = json.Marshal(tr)
+	raw, err = asn1.Marshal(*tr)
 	Expect(err).NotTo(HaveOccurred())
 
 	marshalledInfo := make([][]byte, len(inf))
@@ -606,8 +555,9 @@ func prepareTransfer(pp *crypto.PublicParams, signer driver.SigningIdentity, aud
 	err = auditor.Check(tr, transferMetadata, tokns, "1")
 	Expect(err).NotTo(HaveOccurred())
 
-	tr.AuditorSignature, err = auditor.Endorse(tr, "1")
+	sigma, err := auditor.Endorse(tr, "1")
 	Expect(err).NotTo(HaveOccurred())
+	tr.AuditorSignatures = append(tr.AuditorSignatures, sigma)
 
 	signatures, err := sender.SignTokenActions(raw, "1")
 	Expect(err).NotTo(HaveOccurred())

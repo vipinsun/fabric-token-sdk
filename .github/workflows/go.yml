@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOPATH: ${{ github.workspace }}
+      GOFLAGS: -mod=mod
     defaults:
       run:
         working-directory: ${{ env.GOPATH }}/src/github.com/hyperledger-labs/fabric-token-sdk
@@ -34,7 +35,4 @@ jobs:
       run: make checks
 
     - name: Unit Tests
-      run: make unit-tests
-
-    - name: Integration Tests
-      run: make integration-tests
+      run: make unit-tests-race

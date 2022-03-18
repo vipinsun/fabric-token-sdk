@@ -8,8 +8,6 @@ package token
 import (
 	"github.com/pkg/errors"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-
 	token2 "github.com/hyperledger-labs/fabric-token-sdk/token/token"
 )
 
@@ -29,8 +27,9 @@ var (
 
 // OwnerFilter tells if a passed identity is recognized
 type OwnerFilter interface {
-	// Contains returns true if the passed identity is recognized, false otherwise.
-	Contains(identity view.Identity) bool
+	ID() string
+	// ContainsToken returns true if the passed token is recognized, false otherwise.
+	ContainsToken(token *token2.UnspentToken) bool
 }
 
 // Selector is the interface of token selectors
@@ -42,5 +41,5 @@ type Selector interface {
 	// Quantity is a string in decimal format
 	// Notice that, the quantity selected might exceed the quantity requested due to the amounts
 	// stored in each token.
-	Select(ownerFilter OwnerFilter, q, tokenType string) ([]*token2.Id, token2.Quantity, error)
+	Select(ownerFilter OwnerFilter, q, tokenType string) ([]*token2.ID, token2.Quantity, error)
 }

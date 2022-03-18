@@ -3,15 +3,16 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package crypto
 
 import (
+	"crypto/sha256"
 	"encoding/json"
-	math2 "math"
-
+	math "github.com/IBM/mathlib"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/pkg/errors"
 
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/pssign"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 )
@@ -21,19 +22,24 @@ const (
 )
 
 type PublicParams struct {
-	P                *bn256.G1
-	ZKATPedParams    []*bn256.G1
+	P                *math.G1
+	ZKATPedParams    []*math.G1
 	RangeProofParams *RangeProofParams
+	IdemixCurve      math.CurveID
 	IdemixPK         []byte
 	IssuingPolicy    []byte
 	Auditor          []byte
+	Issuers          [][]byte
 	Label            string
+	Curve            int
+
+	Hash []byte
 }
 
 type RangeProofParams struct {
-	SignPK       []*bn256.G2
+	SignPK       []*math.G2
 	SignedValues []*pssign.Signature
-	Q            *bn256.G2
+	Q            *math.G2
 	Exponent     int
 }
 
@@ -42,6 +48,9 @@ func NewPublicParamsFromBytes(raw []byte, label string) (*PublicParams, error) {
 	pp.Label = label
 	if err := pp.Deserialize(raw); err != nil {
 		return nil, errors.Wrap(err, "failed parsing public parameters")
+	}
+	if err := pp.ComputeHash(raw); err != nil {
+		return nil, errors.Wrap(err, "failed computing hash")
 	}
 	return pp, nil
 }
@@ -90,31 +99,39 @@ func (pp *PublicParams) Deserialize(raw []byte) error {
 		return errors.Errorf("invalid identifier, expecting [%s], got [%s]", pp.Label, publicParams.Identifier)
 	}
 	// logger.Debugf("unmarshall zkatdlog public params [%s]", string(publicParams.Raw))
-	return json.Unmarshal(publicParams.Raw, pp)
+	if err := json.Unmarshal(publicParams.Raw, pp); err != nil {
+		return errors.Wrapf(err, "failed unmarshalling public parameters")
+	}
+	if err := pp.ComputeHash(raw); err != nil {
+		return errors.Wrap(err, "failed computing hash")
+	}
+	return nil
 }
 
 func (pp *PublicParams) GeneratePedersenParameters() error {
-	rand, err := bn256.GetRand()
+	curve := math.Curves[pp.Curve]
+	rand, err := curve.Rand()
 	if err != nil {
 		return errors.Errorf("failed to get RNG")
 	}
-	pp.P = bn256.G1Gen().Mul(bn256.RandModOrder(rand))
-	pp.ZKATPedParams = make([]*bn256.G1, 3)
+	pp.P = curve.GenG1.Mul(curve.NewRandomZr(rand))
+	pp.ZKATPedParams = make([]*math.G1, 3)
 
 	for i := 0; i < len(pp.ZKATPedParams); i++ {
-		pp.ZKATPedParams[i] = bn256.G1Gen().Mul(bn256.RandModOrder(rand))
+		pp.ZKATPedParams[i] = curve.GenG1.Mul(curve.NewRandomZr(rand))
 	}
 	return nil
 }
 
 func (pp *PublicParams) GenerateRangeProofParameters(signer *pssign.Signer, maxValue int64) error {
+	curve := math.Curves[pp.Curve]
 	pp.RangeProofParams = &RangeProofParams{Q: signer.Q, SignPK: signer.PK}
 
 	pp.RangeProofParams.SignedValues = make([]*pssign.Signature, maxValue)
 	for i := 0; i < len(pp.RangeProofParams.SignedValues); i++ {
 		var err error
-		m := make([]*bn256.Zr, 1)
-		m[0] = bn256.NewZrInt(i)
+		m := make([]*math.Zr, 1)
+		m[0] = curve.NewZrFromInt(int64(i))
 		pp.RangeProofParams.SignedValues[i], err = signer.Sign(m)
 		if err != nil {
 			return errors.Errorf("failed to generate public parameters: cannot sign range")
@@ -124,61 +141,38 @@ func (pp *PublicParams) GenerateRangeProofParameters(signer *pssign.Signer, maxV
 	return nil
 }
 
-func (pp *PublicParams) SetIssuingPolicy(issuers []*bn256.G1) error {
-	ip := &IssuingPolicy{BitLength: int(math2.Ceil(math2.Log2(float64(len(issuers))))), IssuersNumber: len(issuers)}
-
-	// pad list of issuers with a dummy commitment
-	if len(issuers) != int(math2.Exp2(math2.Ceil(math2.Log2(float64(len(issuers)))))) {
-
-		for i := len(issuers); i < int(math2.Exp2(math2.Ceil(math2.Log2(float64(len(issuers)))))); i++ {
-			issuers = append(issuers, bn256.G1Gen())
-		}
+func (pp *PublicParams) ComputeHash(raw []byte) error {
+	hash := sha256.New()
+	n, err := hash.Write(raw)
+	if n != len(raw) {
+		return errors.New("failed to hash public parameters")
 	}
-	ip.Issuers = issuers
-	var err error
-	pp.IssuingPolicy, err = ip.Serialize()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to hash public parameters")
 	}
-
+	pp.Hash = hash.Sum(nil)
 	return nil
 }
 
-func (pp *PublicParams) AddIssuer(issuer *bn256.G1) error {
-	ip := &IssuingPolicy{}
-
-	err := ip.Deserialize(pp.IssuingPolicy)
-	if err != nil {
-		return errors.Wrapf(err, "failed deserializing issuing policy")
-	}
-
-	ip.Issuers = append(ip.Issuers, issuer)
-	if err := pp.SetIssuingPolicy(ip.Issuers); err != nil {
-		return errors.Wrapf(err, "failed setting issuing policy")
-	}
-	return nil
+func (pp *PublicParams) AddAuditor(auditor view.Identity) {
+	pp.Auditor = auditor
 }
 
-func (pp *PublicParams) GetIssuingPolicy() (*IssuingPolicy, error) {
-	ip := &IssuingPolicy{}
-	err := ip.Deserialize(pp.IssuingPolicy)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed deserializing issuing policy")
-	}
-	return ip, nil
+func (pp *PublicParams) AddIssuer(id view.Identity) {
+	pp.Issuers = append(pp.Issuers, id)
 }
 
-func Setup(base int64, exponent int, nymPK []byte) (*PublicParams, error) {
-	return SetupWithCustomLabel(base, exponent, nymPK, DLogPublicParameters)
+func Setup(base int64, exponent int, nymPK []byte, curveID math.CurveID) (*PublicParams, error) {
+	return SetupWithCustomLabel(base, exponent, nymPK, DLogPublicParameters, curveID)
 }
 
-func SetupWithCustomLabel(base int64, exponent int, nymPK []byte, label string) (*PublicParams, error) {
-	signer := &pssign.Signer{}
+func SetupWithCustomLabel(base int64, exponent int, nymPK []byte, label string, curveID math.CurveID) (*PublicParams, error) {
+	signer := pssign.NewSigner(nil, nil, nil, math.Curves[1])
 	err := signer.KeyGen(1)
 	if err != nil {
 		return nil, err
 	}
-	pp := &PublicParams{}
+	pp := &PublicParams{Curve: 1}
 	pp.Label = label
 	err = pp.GeneratePedersenParameters()
 	if err != nil {
@@ -188,13 +182,8 @@ func SetupWithCustomLabel(base int64, exponent int, nymPK []byte, label string) 
 	if err != nil {
 		return nil, err
 	}
-	// empty issuing policy
-	ip := &IssuingPolicy{}
-	pp.IssuingPolicy, err = ip.Serialize()
-	if err != nil {
-		return nil, err
-	}
 	pp.IdemixPK = nymPK
+	pp.IdemixCurve = curveID
 	pp.RangeProofParams.Exponent = exponent
 	// max value of any given token is max = base^exponent - 1
 	return pp, nil

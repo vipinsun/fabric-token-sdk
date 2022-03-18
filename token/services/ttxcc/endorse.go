@@ -3,21 +3,24 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package ttxcc
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"strconv"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracker/metrics"
 	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 
 	"github.com/hyperledger-labs/fabric-token-sdk/token"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/network"
 )
 
 type signatureRequest struct {
@@ -55,6 +58,10 @@ func NewCollectEndorsementsView(tx *Transaction) *collectEndorsementsView {
 // Depending on the token driver implementation, the recipient's signature might or might not be needed to make
 // the token transaction valid.
 func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error) {
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "start", "collectEndorsements", c.tx.ID())
+	defer agent.EmitKey(0, "ttxcc", "end", "collectEndorsements", c.tx.ID())
+
 	// Store transient
 	err := c.tx.storeTransient()
 	if err != nil {
@@ -77,12 +84,12 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 	distributionList = append(distributionList, parties...)
 
 	// 2. Audit
-	if !c.tx.Opts.auditor.IsNone() {
+	if !c.tx.Opts.Auditor.IsNone() {
 		_, err := context.RunView(newAuditingViewInitiator(c.tx))
 		if err != nil {
-			return nil, errors.WithMessagef(err, "failed requesting auditing from [%s]", c.tx.Opts.auditor.String())
+			return nil, errors.WithMessagef(err, "failed requesting auditing from [%s]", c.tx.Opts.Auditor.String())
 		}
-		distributionList = append(distributionList, c.tx.Opts.auditor)
+		distributionList = append(distributionList, c.tx.Opts.Auditor)
 	}
 
 	// 3. Endorse and return the Fabric transaction envelope
@@ -97,35 +104,57 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 	}
 
 	// Cleanup
-	if !c.tx.Opts.auditor.IsNone() {
-		session, err := context.GetSession(nil, c.tx.Opts.auditor)
+	if !c.tx.Opts.Auditor.IsNone() {
+		session, err := context.GetSession(nil, c.tx.Opts.Auditor)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed getting auditor's session")
 		}
 		session.Close()
 	}
 
-	logger.Debugf("collectEndorsementsView done.")
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("collectEndorsementsView done.")
+	}
 	return nil, nil
 }
 
 func (c *collectEndorsementsView) requestSignaturesOnIssues(context view.Context) ([]view.Identity, error) {
+
+	issues := c.tx.TokenRequest.Issues()
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("collecting signature on [%d] request issue", len(issues))
+	}
+
+	if len(issues) == 0 {
+		return nil, nil
+	}
+
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "start", "requestSignaturesOnIssues", c.tx.ID())
+	defer agent.EmitKey(0, "ttxcc", "end", "requestSignaturesOnIssues", c.tx.ID())
+
 	requestRaw, err := c.requestBytes()
 	if err != nil {
 		return nil, err
 	}
 
 	var distributionList []view.Identity
-	for _, issue := range c.tx.TokenRequest.Issues() {
+	for _, issue := range issues {
 		distributionList = append(distributionList, issue.Issuer)
 		distributionList = append(distributionList, issue.Receivers...)
 
 		// contact issuer and ask for the signature unless it is me
 		party := issue.Issuer
-		logger.Debugf("collecting signature on request (issue) from [%s]", party.UniqueID())
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("collecting signature on request (issue) from [%s]", party.UniqueID())
+		}
 		if signer, err := c.tx.TokenService().SigService().GetSigner(party); err == nil {
-			logger.Debugf("signing [%s][%s]", hash.Hashable(requestRaw).String(), c.tx.ID())
-			logger.Debugf("signing tx-id [%s,nonce=%s]", c.tx.ID(), base64.StdEncoding.EncodeToString(c.tx.Id.Nonce))
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("signing [%s][%s]", hash.Hashable(requestRaw).String(), c.tx.ID())
+			}
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("signing tx-id [%s,nonce=%s]", c.tx.ID(), base64.StdEncoding.EncodeToString(c.tx.TxID.Nonce))
+			}
 			sigma, err := signer.Sign(append(requestRaw, []byte(c.tx.ID())...))
 			if err != nil {
 				return nil, err
@@ -146,7 +175,7 @@ func (c *collectEndorsementsView) requestSignaturesOnIssues(context view.Context
 			TxID:    []byte(c.tx.ID()),
 			Signer:  party,
 		}
-		signatureRequestRaw, err := json.Marshal(signatureRequest)
+		signatureRequestRaw, err := Marshal(signatureRequest)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +187,9 @@ func (c *collectEndorsementsView) requestSignaturesOnIssues(context view.Context
 		var msg *view.Message
 		select {
 		case msg = <-ch:
-			logger.Debugf("collect signatures on issue: reply received from [%s]", party)
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("collect signatures on issue: reply received from [%s]", party)
+			}
 		case <-time.After(60 * time.Second):
 			return nil, errors.Errorf("Timeout from party %s", party)
 		}
@@ -184,20 +215,32 @@ func (c *collectEndorsementsView) requestSignaturesOnIssues(context view.Context
 }
 
 func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Context) ([]view.Identity, error) {
+	transfers := c.tx.TokenRequest.Transfers()
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("collecting signature on [%d] request transfer", len(transfers))
+	}
+
+	if len(transfers) == 0 {
+		return nil, nil
+	}
+
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "start", "requestSignaturesOnTransfers", c.tx.ID())
+	defer agent.EmitKey(0, "ttxcc", "end", "requestSignaturesOnTransfers", c.tx.ID())
+
 	requestRaw, err := c.requestBytes()
 	if err != nil {
 		return nil, err
 	}
-
-	transfers := c.tx.TokenRequest.Transfers()
-	logger.Debugf("collecting signature on [%d] request transfer", len(transfers))
 
 	var distributionList []view.Identity
 	for i, transfer := range transfers {
 		distributionList = append(distributionList, transfer.Senders...)
 		distributionList = append(distributionList, transfer.Receivers...)
 
-		logger.Debugf("collecting signature on [%d]-th request transfer, signers [%d]", i, len(transfer.Senders))
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("collecting signature on [%d]-th request transfer, signers [%d]", i, len(transfer.Senders))
+		}
 
 		// contact transfer and ask for the signature unless it is me
 		for _, party := range transfer.Senders {
@@ -207,25 +250,33 @@ func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Cont
 				Signer:  party,
 			}
 
-			logger.Debugf("collecting signature on request (transfer) from [%s]", party.UniqueID())
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("collecting signature on request (transfer) from [%s]", party.UniqueID())
+			}
 
 			if signer, err := c.tx.TokenService().SigService().GetSigner(party); err == nil {
-				logger.Debugf("collecting signature on request (transfer) from [%s], it is me!", party.UniqueID())
-				logger.Debugf("signing tx-id [%s,nonce=%s]", c.tx.ID(), base64.StdEncoding.EncodeToString(c.tx.Id.Nonce))
+				if logger.IsEnabledFor(zapcore.DebugLevel) {
+					logger.Debugf("collecting signature on request (transfer) from [%s], it is me!", party.UniqueID())
+					logger.Debugf("signing tx-id [%s,nonce=%s]", c.tx.ID(), base64.StdEncoding.EncodeToString(c.tx.TxID.Nonce))
+				}
 				sigma, err := signer.Sign(signatureRequest.MessageToSign())
 				if err != nil {
 					return nil, err
 				}
-				logger.Debugf("signature verified (me) [%s,%s,%s]",
-					hash.Hashable(signatureRequest.MessageToSign()).String(),
-					hash.Hashable(sigma).String(),
-					party.UniqueID(),
-				)
+				if logger.IsEnabledFor(zapcore.DebugLevel) {
+					logger.Debugf("signature verified (me) [%s,%s,%s]",
+						hash.Hashable(signatureRequest.MessageToSign()).String(),
+						hash.Hashable(sigma).String(),
+						party.UniqueID(),
+					)
+				}
 
 				c.tx.TokenRequest.AppendSignature(sigma)
 				continue
 			}
-			logger.Debugf("collecting signature on request (transfer) from [%s], it is not me, connect to party!", party.UniqueID())
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("collecting signature on request (transfer) from [%s], it is not me, connect to party!", party.UniqueID())
+			}
 
 			session, err := context.GetSession(context.Initiator(), party)
 			if err != nil {
@@ -234,7 +285,7 @@ func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Cont
 			// Wait to receive a content back
 			ch := session.Receive()
 
-			signatureRequestRaw, err := json.Marshal(signatureRequest)
+			signatureRequestRaw, err := Marshal(signatureRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -246,7 +297,9 @@ func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Cont
 			var msg *view.Message
 			select {
 			case msg = <-ch:
-				logger.Debugf("collect signatures on transfer: reply received from [%s]", party)
+				if logger.IsEnabledFor(zapcore.DebugLevel) {
+					logger.Debugf("collect signatures on transfer: reply received from [%s]", party)
+				}
 			case <-time.After(60 * time.Second):
 				return nil, errors.Errorf("Timeout from party %s", party)
 			}
@@ -265,11 +318,13 @@ func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Cont
 				return nil, errors.Wrapf(err, "failed verifying signature from [%s]", party)
 			}
 
-			logger.Debugf("signature verified [%s,%s,%s]",
-				hash.Hashable(signatureRequest.MessageToSign()).String(),
-				hash.Hashable(sigma).String(),
-				party.UniqueID(),
-			)
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("signature verified [%s,%s,%s]",
+					hash.Hashable(signatureRequest.MessageToSign()).String(),
+					hash.Hashable(sigma).String(),
+					party.UniqueID(),
+				)
+			}
 
 			c.tx.TokenRequest.AppendSignature(sigma)
 		}
@@ -278,17 +333,30 @@ func (c *collectEndorsementsView) requestSignaturesOnTransfers(context view.Cont
 	return distributionList, nil
 }
 
-func (c *collectEndorsementsView) callChaincode(context view.Context) (*fabric.Envelope, error) {
+func (c *collectEndorsementsView) callChaincode(context view.Context) (*network.Envelope, error) {
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "start", "callChaincode", c.tx.ID())
+	defer agent.EmitKey(0, "ttxcc", "end", "callChaincode", c.tx.ID())
+
 	requestRaw, err := c.tx.TokenRequest.RequestToBytes()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed marshalling request")
 	}
+	agent.EmitKey(0, "ttxcc", "size", "callChaincodeSize", c.tx.ID(), strconv.Itoa(len(requestRaw)))
 
-	logger.Debugf("call chaincode for endorsement [nonce=%s]", base64.StdEncoding.EncodeToString(c.tx.Id.Nonce))
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("call chaincode for endorsement [nonce=%s]", base64.StdEncoding.EncodeToString(c.tx.TxID.Nonce))
+	}
 
-	env, err := fabric.GetChannel(context, c.tx.Network(), c.tx.Channel()).Chaincode(c.tx.Namespace()).Endorse(
-		"invoke", requestRaw,
-	).WithInvokerIdentity(c.tx.Signer).WithTxID(c.tx.Payload.Id).Call()
+	agent.EmitKey(0, "ttxcc", "start", "callChaincodeRequest", c.tx.ID())
+	env, err := network.GetInstance(context, c.tx.Network(), c.tx.Channel()).RequestApproval(
+		context,
+		c.tx.Namespace(),
+		requestRaw,
+		c.tx.Signer,
+		c.tx.Payload.TxID,
+	)
+	agent.EmitKey(0, "ttxcc", "end", "callChaincodeRequest", c.tx.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -301,20 +369,25 @@ func (c *collectEndorsementsView) callChaincode(context view.Context) (*fabric.E
 	return env, nil
 }
 
-func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabric.Envelope, distributionList []view.Identity) error {
+func (c *collectEndorsementsView) distributeEnv(context view.Context, env *network.Envelope, distributionList []view.Identity) error {
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "start", "distributeEnv", c.tx.ID())
+	defer agent.EmitKey(0, "ttxcc", "end", "distributeEnv", c.tx.ID())
+
 	if env == nil {
 		return errors.New("fabric transaction envelope is empty")
 	}
 
 	// double check that the transaction is valid
-	if err := c.tx.Verify(); err != nil {
-		return errors.Wrap(err, "failed verifying transaction content before distributing it")
-	}
+	// if err := c.tx.Verify(); err != nil {
+	// 	return errors.Wrap(err, "failed verifying transaction content before distributing it")
+	// }
 
 	txRaw, err := c.tx.Bytes()
 	if err != nil {
 		return errors.Wrap(err, "failed marshalling transaction content")
 	}
+	agent.EmitKey(0, "ttxcc", "size", "distributeEnvSize", c.tx.ID(), strconv.Itoa(len(txRaw)))
 
 	// Compress distributionList
 	type distributionListEntry struct {
@@ -328,17 +401,20 @@ func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabri
 			// In the case of a redeem
 			continue
 		}
-		logger.Debugf("distribute env to [%s]?", party.UniqueID())
-		isMe := false
-		if _, err := c.tx.TokenService().SigService().GetSigner(party); err == nil {
-			isMe = true
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("distribute env to [%s]?", party.UniqueID())
 		}
-		logger.Debugf("distribute env to [%s], it is me [%v].", party.UniqueID(), isMe)
+		isMe := c.tx.TokenService().SigService().IsMe(party)
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("distribute env to [%s], it is me [%v].", party.UniqueID(), isMe)
+		}
 		longTermIdentity, _, _, err := view2.GetEndpointService(context).Resolve(party)
 		if err != nil {
 			return errors.Wrapf(err, "cannot resolve long term identity for [%s]", party.UniqueID())
 		}
-		logger.Debugf("searching for long term identity [%s]", longTermIdentity)
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("searching for long term identity [%s]", longTermIdentity)
+		}
 		found := false
 		for _, entry := range distributionListCompressed {
 			if longTermIdentity.Equal(entry.LongTerm) {
@@ -347,26 +423,38 @@ func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabri
 			}
 		}
 		if !found {
-			logger.Debugf("adding [%s] to distribution list", party)
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("adding [%s] to distribution list", party)
+			}
 			distributionListCompressed = append(distributionListCompressed, distributionListEntry{
 				IsMe:     isMe,
 				LongTerm: longTermIdentity,
 				ID:       party,
 			})
 		} else {
-			logger.Debugf("skip adding [%s] to distribution list, already added", party)
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("skip adding [%s] to distribution list, already added", party)
+			}
 		}
 	}
 
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("distributed env of size [%d] to num parties", len(txRaw), len(distributionListCompressed))
+	}
+
 	for _, entry := range distributionListCompressed {
-		logger.Debugf("distribute fabric transaction enveloper to [%s]", entry.ID.UniqueID())
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("distribute fabric transaction enveloper to [%s]", entry.ID.UniqueID())
+		}
 
 		if entry.IsMe {
-			logger.Debugf("This is me [%s], endorse locally", entry.ID.UniqueID())
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("This is me [%s], endorse locally", entry.ID.UniqueID())
+			}
 
 			// Inform the vault about the transaction
-			ch := fabric.GetChannel(context, c.tx.Network(), c.tx.Channel())
-			rws, err := ch.Vault().GetRWSet(c.tx.ID(), env.Results())
+			ch := network.GetInstance(context, c.tx.Network(), c.tx.Channel())
+			rws, err := ch.GetRWSet(c.tx.ID(), env.Results())
 			if err != nil {
 				return errors.WithMessagef(err, "failed getting rwset for tx [%s]", c.tx.ID())
 			}
@@ -376,13 +464,15 @@ func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabri
 			if err != nil {
 				return errors.WithMessagef(err, "failed marshalling tx env [%s]", c.tx.ID())
 			}
-			if err := ch.Vault().StoreEnvelope(env.TxID(), rawEnv); err != nil {
+			if err := ch.StoreEnvelope(env.TxID(), rawEnv); err != nil {
 				return errors.WithMessagef(err, "failed storing tx env [%s]", c.tx.ID())
 			}
 
 			continue
 		} else {
-			logger.Debugf("This is not me [%s], ask endorse", entry.ID.UniqueID())
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("This is not me [%s], ask endorse", entry.ID.UniqueID())
+			}
 		}
 
 		session, err := context.GetSession(context.Initiator(), entry.ID)
@@ -397,11 +487,14 @@ func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabri
 		if err != nil {
 			return errors.Wrap(err, "failed sending transaction content")
 		}
+		agent.EmitKey(0, "ttxcc", "sent", "tx", c.tx.ID())
 
 		var msg *view.Message
 		select {
 		case msg = <-ch:
-			logger.Debugf("collect ack on distributed env: reply received from [%s]", entry.ID)
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				logger.Debugf("collect ack on distributed env: reply received from [%s]", entry.ID)
+			}
 		case <-time.After(240 * time.Second):
 			return errors.Errorf("Timeout from party %s", entry.ID)
 		}
@@ -409,8 +502,11 @@ func (c *collectEndorsementsView) distributeEnv(context view.Context, env *fabri
 			return errors.New(string(msg.Payload))
 		}
 		// TODO: Check ack
+		agent.EmitKey(0, "ttxcc", "received", "txAck", c.tx.ID())
 
-		logger.Debugf("collectEndorsementsView: collected signature from %s", entry.ID)
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("collectEndorsementsView: collected signature from %s", entry.ID)
+		}
 	}
 
 	return nil
@@ -422,6 +518,7 @@ func (c *collectEndorsementsView) requestBytes() ([]byte, error) {
 
 type receiveTransactionView struct {
 	network string
+	channel string
 }
 
 func NewReceiveTransactionView(network string) *receiveTransactionView {
@@ -437,7 +534,7 @@ func (f *receiveTransactionView) Call(context view.Context) (interface{}, error)
 		if msg.Status == view.ERROR {
 			return nil, errors.New(string(msg.Payload))
 		}
-		tx, err := NewTransactionFromBytes(context, f.network, msg.Payload)
+		tx, err := NewTransactionFromBytes(context, f.network, f.channel, msg.Payload)
 		if err != nil {
 			return nil, err
 		}
@@ -478,7 +575,9 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 
 	session := context.Session()
 	for range requestsToBeSigned {
-		logger.Debugf("Receiving signature request...")
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("Receiving signature request...")
+		}
 		sessionChannel := session.Receive()
 		var msg *view.Message
 		select {
@@ -493,11 +592,16 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 
 		// TODO: check what is signed...
 		signatureRequest := &signatureRequest{}
-		err := json.Unmarshal(msg.Payload, signatureRequest)
+		err := Unmarshal(msg.Payload, signatureRequest)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed unmarshalling signature request")
 		}
-		if !fabric.GetFabricNetworkService(context, s.tx.Network()).LocalMembership().IsMe(signatureRequest.Signer) {
+
+		tms := token.GetManagementService(context, token.WithTMS(s.tx.Network(), s.tx.Channel(), s.tx.Namespace()))
+		if tms == nil {
+			return nil, errors.Errorf("failed getting TMS for [%s:%s:%s]", s.tx.Network(), s.tx.Channel(), s.tx.Namespace())
+		}
+		if !tms.WalletManager().IsMe(signatureRequest.Signer) {
 			return nil, errors.Errorf("identity [%s] is not me", signatureRequest.Signer.UniqueID())
 		}
 		signer, err := s.tx.TokenService().SigService().GetSigner(signatureRequest.Signer)
@@ -508,7 +612,9 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed signing request")
 		}
-		logger.Debugf("Send back signature...")
+		if logger.IsEnabledFor(zapcore.DebugLevel) {
+			logger.Debugf("Send back signature...")
+		}
 		err = session.Send(sigma)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed sending signature back")
@@ -516,16 +622,22 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 	}
 
 	// Receive transaction with envelope
-	logger.Debugf("Receive transaction with envelope...")
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("Receive transaction with envelope...")
+	}
 	// TODO: this might also happen multiple times because of the pseudonym. Avoid this by identity resolution at the sender
 	tx, err := ReceiveTransaction(context)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed receiving transaction")
 	}
+	agent := metrics.Get(context)
+	agent.EmitKey(0, "ttxcc", "received", "env", tx.ID())
 
 	// Process Fabric Envelope
-	logger.Debugf("Processes Fabric Envelope with ID [%s]", tx.ID())
-	env := tx.Payload.FabricEnvelope
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("Processes Fabric Envelope with ID [%s]", tx.ID())
+	}
+	env := tx.Payload.Envelope
 	if env == nil {
 		return nil, errors.Errorf("expected fabric envelope")
 	}
@@ -535,8 +647,8 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 		return nil, errors.Wrapf(err, "failed storing transient")
 	}
 
-	ch := fabric.GetChannel(context, tx.Network(), tx.Channel())
-	rws, err := ch.Vault().GetRWSet(tx.ID(), env.Results())
+	ch := network.GetInstance(context, tx.Network(), tx.Channel())
+	rws, err := ch.GetRWSet(tx.ID(), env.Results())
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed getting rwset for tx [%s]", tx.ID())
 	}
@@ -547,16 +659,19 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed marshalling tx env [%s]", tx.ID())
 	}
-	if err := ch.Vault().StoreEnvelope(env.TxID(), rawEnv); err != nil {
+	if err := ch.StoreEnvelope(env.TxID(), rawEnv); err != nil {
 		return nil, errors.WithMessagef(err, "failed storing tx env [%s]", tx.ID())
 	}
 
 	// Send the proposal response back
-	logger.Debugf("Send the ack")
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("Send the ack")
+	}
 	err = session.Send([]byte("ack"))
 	if err != nil {
 		return nil, err
 	}
+	agent.EmitKey(0, "ttxcc", "sent", "txAck", tx.ID())
 
 	return tx, nil
 }

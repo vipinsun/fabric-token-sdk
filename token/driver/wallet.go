@@ -26,6 +26,9 @@ type Wallet interface {
 	// Contains returns true if the passed identity belongs to this wallet
 	Contains(identity view.Identity) bool
 
+	// ContainsToken returns true if the passed token belongs to this wallet
+	ContainsToken(token *token2.UnspentToken) bool
+
 	// GetSigner returns the Signer bound to the passed identity
 	GetSigner(identity view.Identity) (Signer, error)
 }
@@ -85,14 +88,14 @@ type WalletService interface {
 	// GetAuditInfo retrieves the audit information for the passed identity
 	GetAuditInfo(id view.Identity) ([]byte, error)
 
-	GenerateIssuerKeyPair(tokenType string) (Key, Key, error)
-
-	RegisterIssuer(label string, sk Key, pk Key) error
-
+	// GetEnrollmentID extracts the enrollment id from the passed audit information
 	GetEnrollmentID(auditInfo []byte) (string, error)
 
 	// Wallet returns the wallet bound to the passed identity, if any is available
 	Wallet(identity view.Identity) Wallet
+
+	// RegisterOwnerWallet registers the passed wallet as the wallet of the passed recipient identity
+	RegisterOwnerWallet(id string, typ string, path string) error
 
 	// OwnerWallet returns an instance of the OwnerWallet interface bound to the passed id.
 	// The id can be: the wallet identifier or a unique id of a view identity belonging to the wallet.
@@ -120,6 +123,10 @@ type WalletService interface {
 	CertifierWalletByIdentity(identity view.Identity) CertifierWallet
 }
 
+type Matcher interface {
+	Match([]byte) error
+}
+
 // Deserializer models the deserializer of owner, issuer, and auditor identities to
 // get signature verifiers
 type Deserializer interface {
@@ -129,4 +136,6 @@ type Deserializer interface {
 	GetIssuerVerifier(id view.Identity) (Verifier, error)
 	// GetAuditorVerifier returns the verifier associated to the passed auditor identity
 	GetAuditorVerifier(id view.Identity) (Verifier, error)
+	// GetOwnerMatcher returns
+	GetOwnerMatcher(raw []byte) (Matcher, error)
 }

@@ -10,7 +10,7 @@ token-based distributed application on Hyperledger Fabric.
 # Useful Links
 
 - [`Documentation`](./docs/design.md): Discover the design principles of the Fabric Token SDK.
-- [`Examples`](./integration/README.md): Learn how to use the Fabric Smart Client via examples. There is nothing better than this.
+- [`Samples`](./samples/README.md): A collection of sample applications that demonstrate the use of the Fabric Token SDK.
 - `Feedback`: Your help is the key to the success of the Fabric Token SDK. 
   - Submit your issues [`here`][`fabric-token-sdk` Issues]. 
   - If you have any questions, queries or comments, find us on [GitHub discussions].
@@ -23,6 +23,11 @@ token-based distributed application on Hyperledger Fabric.
 `Fabric Token SDK` has not been audited and is provided as-is, use at your own risk. 
 The project will be subject to rapid changes to complete the open-sourcing process, and
 the list of features.
+
+# Getting Help
+
+Found a bug? Need help to fix an issue? You have a great idea for a new feature? Talk to us! You can reach us on
+[Discord](https://discord.gg/hyperledger) in #fabric-token-sdk.
 
 # Motivation
 
@@ -44,38 +49,13 @@ What would happen if the developers could use a `Fabric Token SDK` that let:
 
 Developing Enterprise Token-based distributed applications would become simpler and more secure.
 
-# Use the Fabric Token SDK
-
-## Install
-
-The `Fabric Token SDK` can be downloaded using `go get` as follows:
- ```
-go get github.com/hyperledger-labs/fabric-token-sdk
-```
-
-The above command clones the repo under `$GOPATH/github.com/hyperledger-labs/fabric-token-sdk`.
-
-We recommend to use `go 1.16`. We are testing the Token SDK also against more recent versions of the go-sdk to make sure the Token SDK works properly.
-
-## Makefile
-
-The Token SDK is equipped with a `Makefile` to simplify some tasks.
-Here is the list of commands available.
-
-- `make checks`: check code formatting, style, and licence header.
-- `make unit-tests`: execute the unit-tests.
-- `make integration-tests`: execute the integration tests. The integration tests use `ginkgo`. Please, make sure that `$GOPATH/bin` is in your `PATH` env variable.
-- `make clean`: clean the docker environment, useful for testing.
-
-Executes the above from `$GOPATH/github.com/hyperledger-labs/fabric-token-sdk`.
-
-## Testing Philosophy
+# Testing Philosophy
 
 [Write tests. Not too many. Mostly Integration](https://kentcdodds.com/blog/write-tests)
 
 We also believe that when developing new functions running tests is preferable than running the application to verify the code is working as expected.
 
-## Versioning
+# Versioning
 
 We use [`SemVer`](https://semver.org/) for versioning. For the versions available, see the [`tags on this repository`](https://github.com/hyperledger-labs/fabric-token-sdk/tags).
 

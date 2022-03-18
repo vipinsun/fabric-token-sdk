@@ -6,13 +6,39 @@ SPDX-License-Identifier: Apache-2.0
 package transfer_test
 
 import (
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
+	"sync"
+	"testing"
+
+	math "github.com/IBM/mathlib"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
+
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/transfer"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
 )
+
+func TestParallelProveVerify(t *testing.T) {
+	parallelism := 1000
+
+	prover, verifier := prepareOwnershipTransfer()
+
+	var wg sync.WaitGroup
+	wg.Add(parallelism)
+
+	for i := 0; i < parallelism; i++ {
+		go func() {
+			defer wg.Done()
+			proof, err := prover.Prove()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proof).NotTo(BeNil())
+			err = verifier.Verify(proof)
+			Expect(err).NotTo(HaveOccurred())
+		}()
+	}
+
+	wg.Wait()
+}
 
 var _ = Describe("Transfer", func() {
 	var (
@@ -57,11 +83,10 @@ var _ = Describe("Transfer", func() {
 			})
 		})
 	})
-
 })
 
 func prepareZKTransfer() (*transfer.Prover, *transfer.Verifier) {
-	pp, err := crypto.Setup(100, 2, nil)
+	pp, err := crypto.Setup(100, 2, nil, math.FP256BN_AMCL)
 	Expect(err).NotTo(HaveOccurred())
 
 	wfw, in, out := prepareInputsForZKTransfer(pp)
@@ -89,7 +114,7 @@ func prepareZKTransfer() (*transfer.Prover, *transfer.Verifier) {
 }
 
 func prepareZKTransferWithWrongSum() (*transfer.Prover, *transfer.Verifier) {
-	pp, err := crypto.Setup(100, 2, nil)
+	pp, err := crypto.Setup(100, 2, nil, math.FP256BN_AMCL)
 	Expect(err).NotTo(HaveOccurred())
 
 	wfw, in, out := prepareInvalidInputsForZKTransfer(pp)
@@ -118,7 +143,7 @@ func prepareZKTransferWithWrongSum() (*transfer.Prover, *transfer.Verifier) {
 }
 
 func prepareZKTransferWithInvalidRange() (*transfer.Prover, *transfer.Verifier) {
-	pp, err := crypto.Setup(10, 2, nil)
+	pp, err := crypto.Setup(10, 2, nil, math.FP256BN_AMCL)
 	Expect(err).NotTo(HaveOccurred())
 
 	wfw, in, out := prepareInputsForZKTransfer(pp)
@@ -145,27 +170,28 @@ func prepareZKTransferWithInvalidRange() (*transfer.Prover, *transfer.Verifier) 
 	return prover, verifier
 }
 
-func prepareInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellFormednessWitness, []*bn256.G1, []*bn256.G1) {
-	rand, err := bn256.GetRand()
+func prepareInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellFormednessWitness, []*math.G1, []*math.G1) {
+	c := math.Curves[pp.Curve]
+	rand, err := c.Rand()
 	Expect(err).NotTo(HaveOccurred())
 
-	inBF := make([]*bn256.Zr, 2)
-	outBF := make([]*bn256.Zr, 2)
-	inValues := make([]*bn256.Zr, 2)
-	outValues := make([]*bn256.Zr, 2)
+	inBF := make([]*math.Zr, 2)
+	outBF := make([]*math.Zr, 2)
+	inValues := make([]*math.Zr, 2)
+	outValues := make([]*math.Zr, 2)
 	for i := 0; i < 2; i++ {
-		inBF[i] = bn256.RandModOrder(rand)
+		inBF[i] = c.NewRandomZr(rand)
 	}
 	for i := 0; i < 2; i++ {
-		outBF[i] = bn256.RandModOrder(rand)
+		outBF[i] = c.NewRandomZr(rand)
 	}
 	ttype := "ABC"
-	inValues[0] = bn256.NewZrInt(90)
-	inValues[1] = bn256.NewZrInt(60)
-	outValues[0] = bn256.NewZrInt(50)
-	outValues[1] = bn256.NewZrInt(100)
+	inValues[0] = c.NewZrFromInt(90)
+	inValues[1] = c.NewZrFromInt(60)
+	outValues[0] = c.NewZrFromInt(50)
+	outValues[1] = c.NewZrFromInt(100)
 
-	in, out := prepareInputsOutputs(inValues, outValues, inBF, outBF, ttype, pp.ZKATPedParams)
+	in, out := prepareInputsOutputs(inValues, outValues, inBF, outBF, ttype, pp.ZKATPedParams, c)
 	intw := make([]*token.TokenDataWitness, len(inValues))
 	for i := 0; i < len(intw); i++ {
 		intw[i] = &token.TokenDataWitness{BlindingFactor: inBF[i], Value: inValues[i], Type: ttype}
@@ -179,27 +205,28 @@ func prepareInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellFormedne
 	return transfer.NewWellFormednessWitness(intw, outtw), in, out
 }
 
-func prepareInvalidInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellFormednessWitness, []*bn256.G1, []*bn256.G1) {
-	rand, err := bn256.GetRand()
+func prepareInvalidInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellFormednessWitness, []*math.G1, []*math.G1) {
+	c := math.Curves[pp.Curve]
+	rand, err := c.Rand()
 	Expect(err).NotTo(HaveOccurred())
 
-	inBF := make([]*bn256.Zr, 2)
-	outBF := make([]*bn256.Zr, 2)
-	inValues := make([]*bn256.Zr, 2)
-	outValues := make([]*bn256.Zr, 2)
+	inBF := make([]*math.Zr, 2)
+	outBF := make([]*math.Zr, 2)
+	inValues := make([]*math.Zr, 2)
+	outValues := make([]*math.Zr, 2)
 	for i := 0; i < 2; i++ {
-		inBF[i] = bn256.RandModOrder(rand)
+		inBF[i] = c.NewRandomZr(rand)
 	}
 	for i := 0; i < 2; i++ {
-		outBF[i] = bn256.RandModOrder(rand)
+		outBF[i] = c.NewRandomZr(rand)
 	}
 	ttype := "ABC"
-	inValues[0] = bn256.NewZrInt(90)
-	inValues[1] = bn256.NewZrInt(60)
-	outValues[0] = bn256.NewZrInt(110)
-	outValues[1] = bn256.NewZrInt(45)
+	inValues[0] = c.NewZrFromInt(90)
+	inValues[1] = c.NewZrFromInt(60)
+	outValues[0] = c.NewZrFromInt(110)
+	outValues[1] = c.NewZrFromInt(45)
 
-	in, out := prepareInputsOutputs(inValues, outValues, inBF, outBF, ttype, pp.ZKATPedParams)
+	in, out := prepareInputsOutputs(inValues, outValues, inBF, outBF, ttype, pp.ZKATPedParams, c)
 	intw := make([]*token.TokenDataWitness, len(inValues))
 	for i := 0; i < len(intw); i++ {
 		intw[i] = &token.TokenDataWitness{BlindingFactor: inBF[i], Value: inValues[i], Type: ttype}
@@ -211,4 +238,56 @@ func prepareInvalidInputsForZKTransfer(pp *crypto.PublicParams) (*transfer.WellF
 	}
 
 	return transfer.NewWellFormednessWitness(intw, outtw), in, out
+}
+
+func prepareInputsForOwnershipTransfer(pp *crypto.PublicParams) (*transfer.WellFormednessWitness, []*math.G1, []*math.G1) {
+	c := math.Curves[pp.Curve]
+	rand, err := c.Rand()
+	Expect(err).NotTo(HaveOccurred())
+
+	inBF := c.NewRandomZr(rand)
+	outBF := c.NewRandomZr(rand)
+	ttype := "ABC"
+	inValue := c.NewZrFromInt(90)
+	outValue := c.NewZrFromInt(90)
+
+	in, out := prepareInputsOutputs([]*math.Zr{inValue}, []*math.Zr{outValue}, []*math.Zr{inBF}, []*math.Zr{outBF}, ttype, pp.ZKATPedParams, c)
+	intw := make([]*token.TokenDataWitness, 1)
+	for i := 0; i < len(intw); i++ {
+		intw[i] = &token.TokenDataWitness{BlindingFactor: inBF, Value: inValue, Type: ttype}
+	}
+
+	outtw := make([]*token.TokenDataWitness, 1)
+	for i := 0; i < len(outtw); i++ {
+		outtw[i] = &token.TokenDataWitness{BlindingFactor: outBF, Value: outValue, Type: ttype}
+	}
+	return transfer.NewWellFormednessWitness(intw, outtw), in, out
+}
+
+func prepareOwnershipTransfer() (*transfer.Prover, *transfer.Verifier) {
+	pp, err := crypto.Setup(100, 2, nil, math.FP256BN_AMCL)
+	Expect(err).NotTo(HaveOccurred())
+
+	wfw, in, out := prepareInputsForOwnershipTransfer(pp)
+
+	inBF := wfw.GetInBlindingFators()
+	outBF := wfw.GetOutBlindingFators()
+
+	inValues := wfw.GetInValues()
+	outValues := wfw.GetOutValues()
+
+	ttype := "ABC"
+	intw := make([]*token.TokenDataWitness, len(inValues))
+	for i := 0; i < len(intw); i++ {
+		intw[i] = &token.TokenDataWitness{BlindingFactor: inBF[i], Value: inValues[i], Type: ttype}
+	}
+
+	outtw := make([]*token.TokenDataWitness, len(outValues))
+	for i := 0; i < len(outtw); i++ {
+		outtw[i] = &token.TokenDataWitness{BlindingFactor: outBF[i], Value: outValues[i], Type: ttype}
+	}
+	prover := transfer.NewProver(intw, outtw, in, out, pp)
+	verifier := transfer.NewVerifier(in, out, pp)
+
+	return prover, verifier
 }

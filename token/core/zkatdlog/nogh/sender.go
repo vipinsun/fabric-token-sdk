@@ -8,13 +8,10 @@ package nogh
 import (
 	"strconv"
 
+	math "github.com/IBM/mathlib"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/pkg/errors"
 
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/transfer"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
@@ -22,71 +19,23 @@ import (
 	token3 "github.com/hyperledger-labs/fabric-token-sdk/token/token"
 )
 
-func (s *Service) Transfer(txID string, wallet driver.OwnerWallet, ids []*token3.Id, outputTokens ...*token3.Token) (driver.TransferAction, *driver.TransferMetadata, error) {
+func (s *Service) Transfer(txID string, wallet driver.OwnerWallet, ids []*token3.ID, outputTokens []*token3.Token, opts *driver.TransferOptions) (driver.TransferAction, *driver.TransferMetadata, error) {
 	logger.Debugf("Prepare Transfer Action [%s,%v]", txID, ids)
 
-	var tokens []*token.Token
-	var inputIDs []string
-	var inputInf []*token.TokenInformation
 	var signers []driver.Signer
-	var signerIds []view.Identity
-
-	qe, err := s.Channel.Vault().NewQueryExecutor()
+	inputIDs, tokens, inputInf, signerIds, err := s.TokenLoader.LoadTokens(ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrapf(err, "failed to load tokens")
 	}
-	defer qe.Done()
 
 	pp := s.PublicParams()
-	for _, id := range ids {
-		// Token Info
-		outputID, err := keys.CreateFabtokenKey(id.TxId, int(id.Index))
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "error creating output ID: %v", id)
-		}
-		meta, _, _, err := qe.GetStateMetadata(s.Namespace, outputID)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed getting metadata for id [%v]", id)
-		}
-		ti := &token.TokenInformation{}
-		err = ti.Deserialize(meta[info])
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed deserializeing token info for id [%v]", id)
-		}
-
-		// Token and InputID
-		outputID, err = keys.CreateTokenKey(id.TxId, int(id.Index))
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "error creating output ID: %v", id)
-		}
-		val, err := qe.GetState(s.Namespace, outputID)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed getting state [%s]", outputID)
-		}
-
-		logger.Debugf("loaded transfer input [%s]", hash.Hashable(val).String())
-		token := &token.Token{}
-		err = token.Deserialize(val)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "failed unmarshalling token for id [%v]", id)
-		}
-		tok, err := token.GetTokenInTheClear(ti, pp)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "invalid token, cannot get it in clear [%v]", id)
-		}
-		logger.Debugf("Selected output [%s,%s,%s]", tok.Type, tok.Quantity, view.Identity(tok.Owner.Raw))
-
+	for _, id := range signerIds {
 		// Signer
-		si, err := view2.GetSigService(s.SP).GetSigner(token.Owner)
+		si, err := s.identityProvider.GetSigner(id)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "failed getting signing identity for id [%v]", id)
 		}
-
-		inputIDs = append(inputIDs, outputID)
-		tokens = append(tokens, token)
-		inputInf = append(inputInf, ti)
 		signers = append(signers, si)
-		signerIds = append(signerIds, token.Owner)
 	}
 
 	sender, err := transfer.NewSender(signers, tokens, inputIDs, inputInf, pp)
@@ -137,7 +86,7 @@ func (s *Service) Transfer(txID string, wallet driver.OwnerWallet, ids []*token3
 
 	var receiverAuditInfos [][]byte
 	for _, output := range outputTokens {
-		auditInfo, err := view2.GetSigService(s.SP).GetAuditInfo(output.Owner.Raw)
+		auditInfo, err := s.identityProvider.GetAuditInfo(output.Owner.Raw)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "failed getting audit info for recipient identity [%s]", view.Identity(output.Owner.Raw).String())
 		}
@@ -146,7 +95,7 @@ func (s *Service) Transfer(txID string, wallet driver.OwnerWallet, ids []*token3
 
 	var senderAuditInfos [][]byte
 	for _, t := range tokens {
-		auditInfo, err := view2.GetSigService(s.SP).GetAuditInfo(t.Owner)
+		auditInfo, err := s.identityProvider.GetAuditInfo(t.Owner)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "failed getting audit info for sender identity [%s]", view.Identity(t.Owner).String())
 		}
@@ -185,7 +134,7 @@ func (s *Service) VerifyTransfer(action driver.TransferAction, tokenInfos [][]by
 
 	// get commitments from outputs
 	pp := s.PublicParams()
-	com := make([]*bn256.G1, len(tr.OutputTokens))
+	com := make([]*math.G1, len(tr.OutputTokens))
 	for i := 0; i < len(tr.OutputTokens); i++ {
 
 		ti := &token.TokenInformation{}

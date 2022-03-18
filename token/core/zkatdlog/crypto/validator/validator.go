@@ -3,21 +3,19 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package validator
 
 import (
-	"encoding/json"
-
+	"bytes"
+	math "github.com/IBM/mathlib"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-	"github.com/pkg/errors"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
 
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
 	issue2 "github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue/anonym"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/transfer"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/driver"
@@ -42,7 +40,7 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 		return nil, errors.New("empty token request")
 	}
 	tr := &driver.TokenRequest{}
-	err := json.Unmarshal(raw, tr)
+	err := tr.FromBytes(raw)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal token request")
 	}
@@ -52,16 +50,16 @@ func (v *Validator) VerifyTokenRequestFromRaw(getState driver.GetStateFnc, bindi
 	req := &driver.TokenRequest{}
 	req.Transfers = tr.Transfers
 	req.Issues = tr.Issues
-	bytes, err := json.Marshal(req)
+	bytes, err := req.Bytes()
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal signed token request"+err.Error())
+		return nil, errors.Wrap(err, "failed to marshal signed token request")
 	}
 
 	logger.Debugf("cc tx-id [%s][%s]", hash.Hashable(bytes).String(), binding)
 	signed := append(bytes, []byte(binding)...)
 	var signatures [][]byte
 	if len(v.pp.Auditor) != 0 {
-		signatures = append(signatures, tr.AuditorSignature)
+		signatures = append(signatures, tr.AuditorSignatures...)
 		signatures = append(signatures, tr.Signatures...)
 	} else {
 		signatures = tr.Signatures
@@ -151,28 +149,27 @@ func (v *Validator) verifyIssues(issues []driver.IssueAction, signatureProvider 
 			return errors.Wrapf(err, "failed to verify issue action")
 		}
 
-		if a.Anonymous {
-			verifier := &anonym.Verifier{}
-			ip := &crypto.IssuingPolicy{}
-			err := ip.Deserialize(v.pp.IssuingPolicy)
-			if err != nil {
-				return err
+		issuers := v.pp.Issuers
+		if len(issuers) != 0 {
+			// Check that a.Issuer is in issuers
+			found := false
+			for _, issuer := range issuers {
+				if bytes.Equal(a.Issuer, issuer) {
+					found = true
+					break
+				}
 			}
-			err = verifier.Deserialize(ip.BitLength, ip.Issuers, v.pp.ZKATPedParams, a.OutputTokens[0].Data, a.Issuer)
-			if err != nil {
-				return err
+			if !found {
+				return errors.Errorf("issuer [%s] is not in issuers", view.Identity(a.Issuer).String())
 			}
-			if err := signatureProvider.HasBeenSignedBy(a.Issuer, verifier); err != nil {
-				return errors.Wrapf(err, "failed verifying signature")
-			}
-		} else {
-			verifier, err := v.deserializer.GetIssuerVerifier(a.Issuer)
-			if err != nil {
-				return errors.Wrapf(err, "failed getting verifier for [%s]", view.Identity(a.Issuer).String())
-			}
-			if err := signatureProvider.HasBeenSignedBy(a.Issuer, verifier); err != nil {
-				return errors.Wrapf(err, "failed verifying signature")
-			}
+		}
+
+		verifier, err := v.deserializer.GetIssuerVerifier(a.Issuer)
+		if err != nil {
+			return errors.Wrapf(err, "failed getting verifier for [%s]", view.Identity(a.Issuer).String())
+		}
+		if err := signatureProvider.HasBeenSignedBy(a.Issuer, verifier); err != nil {
+			return errors.Wrapf(err, "failed verifying signature")
 		}
 	}
 	return nil
@@ -231,7 +228,7 @@ func (v *Validator) verifyIssue(issue driver.IssueAction) error {
 func (v *Validator) verifyTransfer(inputTokens [][]byte, tr driver.TransferAction) error {
 	action := tr.(*transfer.TransferAction)
 
-	in := make([]*bn256.G1, len(inputTokens))
+	in := make([]*math.G1, len(inputTokens))
 	for i, raw := range inputTokens {
 		tok := &token.Token{}
 		if err := tok.Deserialize(raw); err != nil {
@@ -265,4 +262,8 @@ func (b *backend) HasBeenSignedBy(id view.Identity, verifier driver.Verifier) er
 
 func (b *backend) GetState(key string) ([]byte, error) {
 	return b.getState(key)
+}
+
+func (b *backend) Signatures() [][]byte {
+	return b.signatures
 }

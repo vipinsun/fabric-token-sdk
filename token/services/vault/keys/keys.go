@@ -20,7 +20,9 @@ const (
 	MaxUnicodeRuneValue                = utf8.MaxRune // U+10FFFF - maximum (and unallocated) code point
 	CompositeKeyNamespace              = "\x00"
 	TokenKeyPrefix                     = "ztoken"
+	SignaturePrefix                    = "sig"
 	FabTokenKeyPrefix                  = "token"
+	FabTokenExtendedKeyPrefix          = "etoken"
 	AuditTokenKeyPrefix                = "audittoken"
 	TokenMineKeyPrefix                 = "mine"
 	TokenSetupKeyPrefix                = "setup"
@@ -28,18 +30,21 @@ const (
 	TokenAuditorKeyPrefix              = "auditor"
 	TokenNameSpace                     = "zkat"
 	numComponentsInKey                 = 2 // 2 components: txid, index, excluding TokenKeyPrefix
+	numComponentsInExtendedKey         = 4 // 2 components: id, type, txid, index, excluding TokenKeyPrefix
 	Action                             = "action"
 	ActionIssue                        = "issue"
 	ActionTransfer                     = "transfer"
 	Precision                   uint64 = 64
 	Info                               = "info"
+	IDs                                = "ids"
 	TokenRequestKeyPrefix              = "token_request"
 	OwnerSeparator                     = "/"
 	SerialNumber                       = "sn"
 	IssueActionMetadata                = "iam"
+	TransferActionMetadata             = "tam"
 )
 
-func GetTokenIdFromKey(key string) (*token2.Id, error) {
+func GetTokenIdFromKey(key string) (*token2.ID, error) {
 	_, components, err := SplitCompositeKey(key)
 	if err != nil {
 		return nil, errors.New(fmt.Sprintf("error splitting input composite key: '%s'", err))
@@ -47,16 +52,36 @@ func GetTokenIdFromKey(key string) (*token2.Id, error) {
 
 	// 4 components in key: ownerType, ownerRaw, txid, index
 	if len(components) != numComponentsInKey {
-		return nil, errors.New(fmt.Sprintf("not enough components in output ID composite key; expected 3, received '%s'", components))
+		return nil, errors.New(fmt.Sprintf("not enough components in output ID composite key; expected 2, received '%s'", components))
 	}
 
 	// txid and index are the last 2 components
 	txID := components[numComponentsInKey-2]
-	index, err := strconv.Atoi(components[numComponentsInKey-1])
+	index, err := strconv.ParseUint(components[numComponentsInKey-1], 10, 64)
 	if err != nil {
 		return nil, errors.New(fmt.Sprintf("error parsing output index '%s': '%s'", components[numComponentsInKey-1], err))
 	}
-	return &token2.Id{TxId: txID, Index: uint32(index)}, nil
+	return &token2.ID{TxId: txID, Index: index}, nil
+}
+
+func GetTokenIdFromExtendedKey(key string) (*token2.ID, error) {
+	_, components, err := SplitCompositeKey(key)
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("error splitting input composite key: '%s'", err))
+	}
+
+	// 4 components in key: ownerType, ownerRaw, txid, index
+	if len(components) != numComponentsInExtendedKey {
+		return nil, errors.New(fmt.Sprintf("not enough components in output ID composite key; expected 4, received '%s'", components))
+	}
+
+	// txid and index are the last 2 components
+	txID := components[numComponentsInExtendedKey-2]
+	index, err := strconv.ParseUint(components[numComponentsInExtendedKey-1], 10, 64)
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("error parsing output index '%s': '%s'", components[numComponentsInExtendedKey-1], err))
+	}
+	return &token2.ID{TxId: txID, Index: index}, nil
 }
 
 func SplitCompositeKey(compositeKey string) (string, []string, error) {
@@ -78,25 +103,32 @@ func SplitCompositeKey(compositeKey string) (string, []string, error) {
 // CreateTokenKey Creates a rwset key for an individual output in a token transaction, as a function of
 // the token owner, transaction ID, and index of the output
 // TODO: move index to uint32 of uint64
-func CreateTokenKey(txID string, index int) (string, error) {
-	return CreateCompositeKey(TokenKeyPrefix, []string{txID, strconv.Itoa(index)})
+func CreateTokenKey(txID string, index uint64) (string, error) {
+	return CreateCompositeKey(TokenKeyPrefix, []string{txID, strconv.FormatUint(index, 10)})
+}
+
+func CreateSigMetadataKey(txID string, index uint64, subKey string) (string, error) {
+	return CreateCompositeKey(SignaturePrefix, []string{txID, strconv.FormatUint(index, 10), subKey})
 }
 
 func CreateSNKey(sn string) (string, error) {
 	return CreateCompositeKey(TokenKeyPrefix, []string{SerialNumber, sn})
 }
 
-// TODO: move index to uint32 of uint64
-func CreateFabtokenKey(txID string, index int) (string, error) {
-	return CreateCompositeKey(FabTokenKeyPrefix, []string{txID, strconv.Itoa(index)})
+func CreateFabTokenKey(txID string, index uint64) (string, error) {
+	return CreateCompositeKey(FabTokenKeyPrefix, []string{txID, strconv.FormatUint(index, 10)})
 }
 
-func CreateAuditTokenKey(txID string, index int) (string, error) {
-	return CreateCompositeKey(AuditTokenKeyPrefix, []string{txID, strconv.Itoa(index)})
+func CreateExtendedFabTokenKey(id string, typ string, txID string, index uint64) (string, error) {
+	return CreateCompositeKey(FabTokenExtendedKeyPrefix, []string{id, typ, txID, strconv.FormatUint(index, 10)})
 }
 
-func CreateTokenMineKey(txID string, index int) (string, error) {
-	return CreateCompositeKey(TokenKeyPrefix, []string{TokenMineKeyPrefix, txID, strconv.Itoa(index)})
+func CreateAuditTokenKey(txID string, index uint64) (string, error) {
+	return CreateCompositeKey(AuditTokenKeyPrefix, []string{txID, strconv.FormatUint(index, 10)})
+}
+
+func CreateTokenMineKey(txID string, index uint64) (string, error) {
+	return CreateCompositeKey(TokenKeyPrefix, []string{TokenMineKeyPrefix, txID, strconv.FormatUint(index, 10)})
 }
 
 func CreateSetupKey() (string, error) {
@@ -113,6 +145,10 @@ func CreateTokenRequestKey(txID string) (string, error) {
 
 func CreateIssueActionMetadataKey(hash string) (string, error) {
 	return CreateCompositeKey(TokenKeyPrefix, []string{IssueActionMetadata, hash})
+}
+
+func CreateTransferActionMetadataKey(hash string) (string, error) {
+	return CreateCompositeKey(TokenKeyPrefix, []string{TransferActionMetadata, hash})
 }
 
 // CreateCompositeKey and its related functions and consts copied from core/chaincode/shim/chaincode.go
@@ -143,8 +179,8 @@ func ValidateCompositeKeyAttribute(str string) error {
 	return nil
 }
 
-func CreateIssuedHistoryTokenKey(txID string, index int) (string, error) {
-	return CreateCompositeKey(IssuedHistoryTokenKeyPrefix, []string{txID, strconv.Itoa(index)})
+func CreateIssuedHistoryTokenKey(txID string, index uint64) (string, error) {
+	return CreateCompositeKey(IssuedHistoryTokenKeyPrefix, []string{txID, strconv.FormatUint(index, 10)})
 }
 
 /*

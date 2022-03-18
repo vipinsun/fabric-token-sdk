@@ -47,21 +47,6 @@ dependencies:
 	go get -u github.com/gordonklaus/ineffassign
 	go get -u github.com/google/addlicense
 
-.PHONY: integration-tests
-integration-tests: docker-images dependencies
-	cd ./integration/token/dvp/dlog; ginkgo -keepGoing --slowSpecThreshold 60 .
-	cd ./integration/token/dvp/fabtoken; ginkgo -keepGoing --slowSpecThreshold 60 .
-	cd ./integration/token/tcc/basic/dlog; ginkgo -keepGoing --slowSpecThreshold 60 .
-	cd ./integration/token/tcc/basic/fabtoken; ginkgo -keepGoing --slowSpecThreshold 60 .
-
-.PHONY: integration-tests-dvp-dlog
-integration-tests-dvp-dlog: docker-images dependencies
-	cd ./integration/token/dvp/dlog; ginkgo -keepGoing --slowSpecThreshold 60 .
-
-.PHONY: integration-tests-dvp-fabtoken
-integration-tests-dvp-fabtoken: docker-images dependencies
-	cd ./integration/token/dvp/fabtoken; ginkgo -keepGoing --slowSpecThreshold 60 .
-
 .PHONY: integration-tests-tcc-dlog
 integration-tests-tcc-dlog: docker-images dependencies
 	cd ./integration/token/tcc/basic/dlog; ginkgo -keepGoing --slowSpecThreshold 60 .
@@ -69,6 +54,14 @@ integration-tests-tcc-dlog: docker-images dependencies
 .PHONY: integration-tests-tcc-fabtoken
 integration-tests-tcc-fabtoken: docker-images dependencies
 	cd ./integration/token/tcc/basic/fabtoken; ginkgo -keepGoing --slowSpecThreshold 60 .
+
+.PHONY: integration-tests-tcc-dvp-fabtoken
+integration-tests-tcc-dvp-fabtoken: docker-images dependencies
+	cd ./integration/token/tcc/dvp/fabtoken; ginkgo -keepGoing --slowSpecThreshold 60 .
+
+.PHONY: integration-tests-tcc-dvp-dlog
+integration-tests-tcc-dvp-dlog: docker-images dependencies
+	cd ./integration/token/tcc/dvp/dlog; ginkgo -keepGoing --slowSpecThreshold 60 .
 
 .PHONY: tidy
 tidy:
@@ -78,11 +71,13 @@ tidy:
 clean:
 	docker network prune -f
 	docker container prune -f
-	rm -rf ./integration/token/dvp/dlog/cmd
-	rm -rf ./integration/token/dvp/fabtoken/cmd
 	rm -rf ./integration/token/tcc/basic/dlog/cmd/
 	rm -rf ./integration/token/tcc/basic/fabtoken/cmd/
+	rm -rf ./integration/token/tcc/dvp/dlog/cmd/
+	rm -rf ./integration/token/tcc/dvp/fabtoken/cmd/
+	rm -rf ./samples/fabric/fungible/cmd
+	rm -rf ./samples/fabric/dvp/cmd
 
 .PHONY: tokengen
 tokengen:
-	@go install github.com/hyperledger-labs/fabric-token-sdk/cmd/tokengen
+	@go install ./cmd/tokengen

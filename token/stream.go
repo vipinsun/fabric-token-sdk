@@ -23,7 +23,7 @@ type Output struct {
 
 type Input struct {
 	ActionIndex  int
-	Id           *token2.Id
+	Id           *token2.ID
 	Owner        view.Identity
 	EnrollmentID string
 	Type         string
@@ -31,7 +31,7 @@ type Input struct {
 }
 
 type QueryService interface {
-	IsMine(id *token2.Id) (bool, error)
+	IsMine(id *token2.ID) (bool, error)
 }
 
 type OutputStream struct {
@@ -99,8 +99,10 @@ func (o *OutputStream) EnrollmentIDs() []string {
 	duplicates := map[string]interface{}{}
 	var eIDs []string
 	for _, output := range o.outputs {
-		_, ok := duplicates[output.EnrollmentID]
-		if !ok {
+		if len(output.EnrollmentID) == 0 {
+			continue
+		}
+		if _, ok := duplicates[output.EnrollmentID]; !ok {
 			eIDs = append(eIDs, output.EnrollmentID)
 			duplicates[output.EnrollmentID] = true
 		}
@@ -112,8 +114,7 @@ func (o *OutputStream) TokenTypes() []string {
 	duplicates := map[string]interface{}{}
 	var types []string
 	for _, output := range o.outputs {
-		_, ok := duplicates[output.Type]
-		if !ok {
+		if _, ok := duplicates[output.Type]; !ok {
 			types = append(types, output.Type)
 			duplicates[output.Type] = true
 		}
@@ -180,8 +181,8 @@ func (is *InputStream) At(i int) *Input {
 	return is.inputs[i]
 }
 
-func (is *InputStream) IDs() []*token2.Id {
-	var res []*token2.Id
+func (is *InputStream) IDs() []*token2.ID {
+	var res []*token2.ID
 	for _, input := range is.inputs {
 		res = append(res, input.Id)
 	}
@@ -192,6 +193,10 @@ func (is *InputStream) EnrollmentIDs() []string {
 	duplicates := map[string]interface{}{}
 	var eIDs []string
 	for _, input := range is.inputs {
+		if len(input.EnrollmentID) == 0 {
+			continue
+		}
+
 		_, ok := duplicates[input.EnrollmentID]
 		if !ok {
 			eIDs = append(eIDs, input.EnrollmentID)

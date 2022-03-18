@@ -19,33 +19,6 @@ import (
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/ttxcc"
 )
 
-type RegisterIssuer struct {
-	TokenTypes []string
-}
-
-type RegisterIssuerView struct {
-	*RegisterIssuer
-}
-
-func (r *RegisterIssuerView) Call(context view.Context) (interface{}, error) {
-	for _, tokenType := range r.TokenTypes {
-		_, err := context.RunView(ttxcc.NewRegisterIssuerIdentityView(tokenType))
-		assert.NoError(err, "failed registering issuer identity for token type [%s]", tokenType)
-	}
-
-	return nil, nil
-}
-
-type RegisterIssuerViewFactory struct{}
-
-func (p *RegisterIssuerViewFactory) NewView(in []byte) (view.View, error) {
-	f := &RegisterIssuerView{RegisterIssuer: &RegisterIssuer{}}
-	err := json.Unmarshal(in, f.RegisterIssuer)
-	assert.NoError(err, "failed unmarshalling input")
-
-	return f, nil
-}
-
 // IssueCash contains the input information to issue a token
 type IssueCash struct {
 	// IssuerWallet is the issuer's wallet to use
@@ -95,6 +68,8 @@ func (p *IssueCashView) Call(context view.Context) (interface{}, error) {
 			fabric.GetDefaultIdentityProvider(context).Identity("auditor"), // Retrieve the auditor's FSC node identity
 		),
 	)
+	tx.SetApplicationMetadata("github.com/hyperledger-labs/fabric-token-sdk/integration/token/tcc/basic/issue", []byte("issue"))
+	tx.SetApplicationMetadata("github.com/hyperledger-labs/fabric-token-sdk/integration/token/tcc/basic/meta", []byte("meta"))
 	assert.NoError(err, "failed creating issue transaction")
 
 	// The issuer adds a new issue operation to the transaction following the instruction received
@@ -116,9 +91,31 @@ func (p *IssueCashView) Call(context view.Context) (interface{}, error) {
 	_, err = context.RunView(ttxcc.NewCollectEndorsementsView(tx))
 	assert.NoError(err, "failed to sign issue transaction")
 
+	// Sanity checks:
+	// - the transaction is in busy state in the vault
+	fns := fabric.GetFabricNetworkService(context, tx.Network())
+	ch, err := fns.Channel(tx.Channel())
+	assert.NoError(err, "failed to retrieve channel [%s]", tx.Channel())
+	vc, _, err := ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+
 	// Last but not least, the issuer sends the transaction for ordering and waits for transaction finality.
 	_, err = context.RunView(ttxcc.NewOrderingAndFinalityView(tx))
 	assert.NoError(err, "failed to commit issue transaction")
+
+	// Sanity checks:
+	// - the transaction is in valid state in the vault
+	vc, _, err = ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in valid state", tx.ID())
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in busy state", tx.ID())
 
 	return tx.ID(), nil
 }

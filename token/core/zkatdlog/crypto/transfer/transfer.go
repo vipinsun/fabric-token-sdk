@@ -7,8 +7,9 @@ package transfer
 
 import (
 	"encoding/json"
+	"sync"
 
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
+	math "github.com/IBM/mathlib"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/common"
 	rangeproof "github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/range"
@@ -34,20 +35,33 @@ type Prover struct {
 	RangeCorrectness common.Prover
 }
 
-func NewProver(inputwitness, outputwitness []*token.TokenDataWitness, inputs, outputs []*bn256.G1, pp *crypto.PublicParams) *Prover {
-
+func NewProver(inputwitness, outputwitness []*token.TokenDataWitness, inputs, outputs []*math.G1, pp *crypto.PublicParams) *Prover {
 	p := &Prover{}
 
-	p.RangeCorrectness = rangeproof.NewProver(outputwitness, outputs, pp.RangeProofParams.SignedValues, pp.RangeProofParams.Exponent, pp.ZKATPedParams, pp.RangeProofParams.SignPK, pp.P, pp.RangeProofParams.Q)
-	wfw := NewWellFormednessWitness(inputwitness, outputwitness)
-	p.WellFormedness = NewWellFormednessProver(wfw, pp.ZKATPedParams, inputs, outputs)
+	inW := make([]*token.TokenDataWitness, len(inputwitness))
+	outW := make([]*token.TokenDataWitness, len(outputwitness))
+
+	for i := 0; i < len(inputwitness); i++ {
+		inW[i] = inputwitness[i].Clone()
+	}
+
+	for i := 0; i < len(outputwitness); i++ {
+		outW[i] = outputwitness[i].Clone()
+	}
+	if len(inputwitness) != 1 || len(outputwitness) != 1 {
+		p.RangeCorrectness = rangeproof.NewProver(outW, outputs, pp.RangeProofParams.SignedValues, pp.RangeProofParams.Exponent, pp.ZKATPedParams, pp.RangeProofParams.SignPK, pp.P, pp.RangeProofParams.Q, math.Curves[pp.Curve])
+	}
+	wfw := NewWellFormednessWitness(inW, outW)
+	p.WellFormedness = NewWellFormednessProver(wfw, pp.ZKATPedParams, inputs, outputs, math.Curves[pp.Curve])
 	return p
 }
 
-func NewVerifier(inputs, outputs []*bn256.G1, pp *crypto.PublicParams) *Verifier {
+func NewVerifier(inputs, outputs []*math.G1, pp *crypto.PublicParams) *Verifier {
 	v := &Verifier{}
-	v.RangeCorrectness = rangeproof.NewVerifier(outputs, uint64(len(pp.RangeProofParams.SignedValues)), pp.RangeProofParams.Exponent, pp.ZKATPedParams, pp.RangeProofParams.SignPK, pp.P, pp.RangeProofParams.Q)
-	v.WellFormedness = NewWellFormednessVerifier(pp.ZKATPedParams, inputs, outputs)
+	if len(inputs) != 1 || len(outputs) != 1 {
+		v.RangeCorrectness = rangeproof.NewVerifier(outputs, uint64(len(pp.RangeProofParams.SignedValues)), pp.RangeProofParams.Exponent, pp.ZKATPedParams, pp.RangeProofParams.SignPK, pp.P, pp.RangeProofParams.Q, math.Curves[pp.Curve])
+	}
+	v.WellFormedness = NewWellFormednessVerifier(pp.ZKATPedParams, inputs, outputs, math.Curves[pp.Curve])
 
 	return v
 }
@@ -61,21 +75,36 @@ func (p *Proof) Deserialize(bytes []byte) error {
 }
 
 func (p *Prover) Prove() ([]byte, error) {
-	wf, err := p.WellFormedness.Prove()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to generate transfer proof")
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var wfProof, rangeProof []byte
+	var wfErr, rangeErr error
+
+	go func() {
+		defer wg.Done()
+		if p.RangeCorrectness != nil {
+			rangeProof, rangeErr = p.RangeCorrectness.Prove()
+		}
+	}()
+
+	wfProof, wfErr = p.WellFormedness.Prove()
+
+	wg.Wait()
+
+	if wfErr != nil {
+		return nil, errors.Wrapf(wfErr, "failed to generate transfer proof")
 	}
 
-	// add range proof
-	rc, err := p.RangeCorrectness.Prove()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to generate range proof for transfer")
+	if rangeErr != nil {
+		return nil, errors.Wrapf(rangeErr, "failed to generate range proof for transfer")
 	}
 
 	proof := &Proof{
-		WellFormedness:   wf,
-		RangeCorrectness: rc,
+		WellFormedness:   wfProof,
+		RangeCorrectness: rangeProof,
 	}
+
 	return proof.Serialize()
 }
 
@@ -85,27 +114,44 @@ func (v *Verifier) Verify(proof []byte) error {
 	if err != nil {
 		return errors.Wrapf(err, "invalid transfer proof: cannot parse proof")
 	}
-	// verifiy well-formedness of inputs and outputs
-	err = v.WellFormedness.Verify(tp.WellFormedness)
-	if err != nil {
-		return err
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var wfErr, rangeErr error
+
+	// verify well-formedness of inputs and outputs
+	wfErr = v.WellFormedness.Verify(tp.WellFormedness)
+
+	go func() {
+		defer wg.Done()
+		// verify range proof
+		if v.RangeCorrectness != nil {
+			rangeErr = v.RangeCorrectness.Verify(tp.RangeCorrectness)
+		}
+	}()
+
+	wg.Wait()
+
+	if wfErr != nil {
+		return wfErr
 	}
-	// verify range proof
-	return v.RangeCorrectness.Verify(tp.RangeCorrectness)
+
+	return rangeErr
 }
 
-func (w *WellFormednessWitness) GetInValues() []*bn256.Zr {
+func (w *WellFormednessWitness) GetInValues() []*math.Zr {
 	return w.inValues
 }
 
-func (w *WellFormednessWitness) GetOutValues() []*bn256.Zr {
+func (w *WellFormednessWitness) GetOutValues() []*math.Zr {
 	return w.outValues
 }
 
-func (w *WellFormednessWitness) GetOutBlindingFators() []*bn256.Zr {
+func (w *WellFormednessWitness) GetOutBlindingFators() []*math.Zr {
 	return w.outBlindingFactors
 }
 
-func (w *WellFormednessWitness) GetInBlindingFators() []*bn256.Zr {
+func (w *WellFormednessWitness) GetInBlindingFators() []*math.Zr {
 	return w.inBlindingFactors
 }

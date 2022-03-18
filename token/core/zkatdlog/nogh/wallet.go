@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package nogh
 
 import (
-	"encoding/json"
+	"fmt"
+	"runtime/debug"
 
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
@@ -16,85 +17,13 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/issue/anonym"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/core/identity/tms"
 	api2 "github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 	token2 "github.com/hyperledger-labs/fabric-token-sdk/token/token"
 )
 
-func (s *Service) IssuerIdentity(label string) (view.Identity, error) {
-	logger.Debugf("searching issuer for [%s] at [%s]", label, s.Channel.Name())
-
-	pp := s.PublicParams()
-	for _, issuer := range s.Issuers {
-		logger.Debugf("issuer for [%s] at [%s]", issuer.label, s.Channel.Name())
-		if issuer.label == label {
-			if issuer.fID != nil {
-				return issuer.fID, nil
-			}
-
-			logger.Debugf("issuer for [%s] at [%s] found (index %d)", issuer.label, s.Channel.Name(), issuer.index)
-
-			witness := anonym.NewWitness(issuer.sk, nil, nil, nil, nil, issuer.index)
-			signer := anonym.NewSigner(witness, nil, nil, 0, pp.ZKATPedParams)
-
-			fID, err := signer.ToUniqueIdentifier()
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed serializing signer for [%s]", label)
-			}
-
-			if err := view2.GetSigService(s.SP).RegisterSigner(fID, signer, signer); err != nil {
-				return nil, errors.Wrapf(err, "failed registering signer for [%s]", label)
-			}
-
-			if err := view2.GetEndpointService(s.SP).Bind(view2.GetIdentityProvider(s.SP).DefaultIdentity(), fID); err != nil {
-				return nil, errors.Wrapf(err, "failed binding to long term identity or [%s]", view.Identity(fID).UniqueID())
-			}
-			issuer.fID = fID
-
-			return fID, nil
-		}
-	}
-
-	// Fetch from vault if not found
-
-	return nil, errors.Errorf("identity not found at [%s]", label)
-}
-
-func (s *Service) GenerateIssuerKeyPair(tokenType string) (api2.Key, api2.Key, error) {
-	return anonym.GenerateKeyPair(tokenType, s.PublicParams())
-}
-
-func (s *Service) RegisterIssuer(label string, sk api2.Key, pk api2.Key) error {
-	if err := s.FetchPublicParams(); err != nil {
-		return errors.WithMessagef(err, "failed fetching public params")
-	}
-
-	// search for pk
-	ip, err := s.PublicParams().GetIssuingPolicy()
-	if err != nil {
-		return errors.WithMessagef(err, "failed parsing issuing policy")
-	}
-
-	_pk := pk.(*bn256.G1)
-
-	for index, issuer := range ip.Issuers {
-		if issuer.Equals(_pk) {
-			s.Issuers = append(s.Issuers, &struct {
-				label string
-				index int
-				sk    *bn256.Zr
-				pk    *bn256.G1
-				fID   view.Identity
-			}{label: label, index: index, sk: sk.(*bn256.Zr), pk: _pk, fID: nil})
-
-			logger.Debugf("registered issuer for [%s] at [%s], fetching public params", label, s.Channel.Name())
-
-			return nil
-		}
-	}
-
-	return errors.Errorf("public key not found in public parameters")
+func (s *Service) RegisterOwnerWallet(id string, typ string, path string) error {
+	return s.identityProvider.RegisterOwnerWallet(id, typ, path)
 }
 
 func (s *Service) GetAuditInfo(id view.Identity) ([]byte, error) {
@@ -170,22 +99,23 @@ func (s *Service) OwnerWalletByID(id interface{}) api2.OwnerWallet {
 
 	// check if there is already a wallet
 	identity, walletID := s.identityProvider.LookupIdentifier(api2.OwnerRole, id)
+	wID := s.walletID(walletID)
 	for _, w := range s.OwnerWallets {
-		if w.Contains(identity) || w.ID() == walletID {
-			logger.Debugf("found owner wallet [%s:%s]", identity, walletID)
+		if w.ID() == wID || (len(identity) != 0 && w.Contains(identity)) {
+			logger.Debugf("found owner wallet [%s:%s:%s]", identity, walletID, w.ID())
 			return w
 		}
 	}
 
 	// Create the wallet
 	if idInfo := s.identityProvider.GetIdentityInfo(api2.OwnerRole, walletID); idInfo != nil {
-		w := newOwnerWallet(s, idInfo.ID, idInfo)
+		w := newOwnerWallet(s, wID, idInfo)
 		s.OwnerWallets = append(s.OwnerWallets, w)
 		logger.Debugf("created owner wallet [%s:%s]", identity, walletID)
 		return w
 	}
 
-	logger.Debugf("no owner wallet found for [%s:%s]", identity, walletID)
+	logger.Debugf("no owner wallet found for [%s:%s:%s] [%s]", id, identity, walletID, debug.Stack())
 	return nil
 }
 
@@ -216,7 +146,7 @@ func (s *Service) issuerWallet(id interface{}) api2.IssuerWallet {
 		if err != nil {
 			panic(err)
 		}
-		w := newIssuerWallet(s, idInfo.ID, id)
+		w := newIssuerWallet(s, walletID, id)
 		s.IssuerWallets = append(s.IssuerWallets, w)
 		logger.Debugf("created issuer wallet [%s:%s]", identity, walletID)
 		return w
@@ -253,7 +183,7 @@ func (s *Service) auditorWallet(id interface{}) api2.AuditorWallet {
 		if err != nil {
 			panic(err)
 		}
-		w := newAuditorWallet(s, idInfo.ID, id)
+		w := newAuditorWallet(s, walletID, id)
 		s.AuditorWallets = append(s.AuditorWallets, w)
 		logger.Debugf("created auditor wallet [%s:%s]", identity, walletID)
 		return w
@@ -272,8 +202,7 @@ func (s *Service) CertifierWalletByIdentity(id view.Identity) api2.CertifierWall
 }
 
 func (s *Service) wrapWalletIdentity(id view.Identity) (view.Identity, error) {
-	ro := &identity.RawOwner{Type: identity.SerializedIdentityType, Identity: id}
-	raw, err := json.Marshal(ro)
+	raw, err := identity.MarshallRawOwner(&identity.RawOwner{Type: identity.SerializedIdentityType, Identity: id})
 	if err != nil {
 		return nil, err
 	}
@@ -283,18 +212,28 @@ func (s *Service) wrapWalletIdentity(id view.Identity) (view.Identity, error) {
 	return raw, nil
 }
 
+func (s *Service) walletID(id string) string {
+	return s.Channel + s.Namespace + id
+}
+
 type wallet struct {
 	tokenService *Service
 	id           string
 	identityInfo *api2.IdentityInfo
+	prefix       string
+	cache        *tms.WalletIdentityCache
 }
 
 func newOwnerWallet(tokenService *Service, id string, identityInfo *api2.IdentityInfo) *wallet {
-	return &wallet{
+	w := &wallet{
 		tokenService: tokenService,
 		id:           id,
 		identityInfo: identityInfo,
+		prefix:       fmt.Sprintf("%s:%s:%s", tokenService.Channel, tokenService.Namespace, id),
 	}
+	w.cache = tms.NewWalletIdentityCache(w.getRecipientIdentity, 200)
+
+	return w
 }
 
 func (w *wallet) ID() string {
@@ -305,12 +244,21 @@ func (w *wallet) Contains(identity view.Identity) bool {
 	return w.existsRecipientIdentity(identity)
 }
 
+func (w *wallet) ContainsToken(token *token2.UnspentToken) bool {
+	return w.Contains(token.Owner.Raw)
+}
+
 func (w *wallet) GetRecipientIdentity() (view.Identity, error) {
+	return w.cache.Identity()
+}
+
+func (w *wallet) getRecipientIdentity() (view.Identity, error) {
 	// Get a new pseudonym
 	pseudonym, err := w.identityInfo.GetIdentity()
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed getting recipient identity from wallet [%s]", w.ID())
 	}
+
 	pseudonym, err = w.tokenService.wrapWalletIdentity(pseudonym)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed wrapping recipient identity from wallet [%s]", w.ID())
@@ -371,31 +319,13 @@ func (w *wallet) ListTokens(opts *api2.ListTokensOptions) (*token2.UnspentTokens
 }
 
 func (w *wallet) existsRecipientIdentity(id view.Identity) bool {
-	k := kvs.CreateCompositeKeyOrPanic(
-		"zkatdlog.owner.wallet.recipient.id",
-		[]string{
-			w.tokenService.Channel.Name(),
-			w.identityInfo.ID,
-			w.identityInfo.EnrollmentID,
-			id.String(),
-		},
-	)
 	kvss := kvs.GetService(w.tokenService.SP)
-	return kvss.Exists(k)
+	return kvss.Exists(w.prefix + id.Hash())
 }
 
 func (w *wallet) putRecipientIdentity(id view.Identity, meta []byte) error {
-	k := kvs.CreateCompositeKeyOrPanic(
-		"zkatdlog.owner.wallet.recipient.id",
-		[]string{
-			w.tokenService.Channel.Name(),
-			w.identityInfo.ID,
-			w.identityInfo.EnrollmentID,
-			id.String(),
-		},
-	)
 	kvss := kvs.GetService(w.tokenService.SP)
-	if err := kvss.Put(k, meta); err != nil {
+	if err := kvss.Put(w.prefix+id.Hash(), meta); err != nil {
 		return err
 	}
 	return nil
@@ -427,6 +357,10 @@ func (w *issuerWallet) ID() string {
 
 func (w *issuerWallet) Contains(identity view.Identity) bool {
 	return w.identity.Equal(identity)
+}
+
+func (w *issuerWallet) ContainsToken(token *token2.UnspentToken) bool {
+	return w.Contains(token.Owner.Raw)
 }
 
 func (w *issuerWallet) GetIssuerIdentity(tokenType string) (view.Identity, error) {
@@ -491,6 +425,10 @@ func (w *auditorWallet) ID() string {
 
 func (w *auditorWallet) Contains(identity view.Identity) bool {
 	return w.identity.Equal(identity)
+}
+
+func (w *auditorWallet) ContainsToken(token *token2.UnspentToken) bool {
+	return w.Contains(token.Owner.Raw)
 }
 
 func (w *auditorWallet) GetAuditorIdentity() (view.Identity, error) {

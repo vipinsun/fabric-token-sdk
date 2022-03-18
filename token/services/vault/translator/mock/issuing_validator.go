@@ -32,15 +32,16 @@ func (fake *IssuingValidator) Validate(arg1 view.Identity, arg2 string) error {
 		arg1 view.Identity
 		arg2 string
 	}{arg1, arg2})
+	stub := fake.ValidateStub
+	fakeReturns := fake.validateReturns
 	fake.recordInvocation("Validate", []interface{}{arg1, arg2})
 	fake.validateMutex.Unlock()
-	if fake.ValidateStub != nil {
-		return fake.ValidateStub(arg1, arg2)
+	if stub != nil {
+		return stub(arg1, arg2)
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.validateReturns
 	return fakeReturns.result1
 }
 

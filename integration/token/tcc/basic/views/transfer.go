@@ -25,7 +25,7 @@ type Transfer struct {
 	// Wallet is the identifier of the wallet that owns the tokens to transfer
 	Wallet string
 	// TokenIDs contains a list of token ids to transfer. If empty, tokens are selected on the spot.
-	TokenIDs []*token.Id
+	TokenIDs []*token.ID
 	// Type of tokens to transfer
 	Type string
 	// Amount to transfer
@@ -34,6 +34,8 @@ type Transfer struct {
 	Recipient view.Identity
 	// Retry tells if a retry must happen in case of a failure
 	Retry bool
+	// FailToRelease if true, it fails after transfer to trigger the Release function on the token transaction
+	FailToRelease bool
 }
 
 type TransferView struct {
@@ -79,6 +81,12 @@ func (t *TransferView) Call(context view.Context) (interface{}, error) {
 	)
 	assert.NoError(err, "failed adding new tokens")
 
+	if t.FailToRelease {
+		// return an error to trigger the Release function on the token transaction
+		// The Release function is called when the context is canceled due to a panic or an error.
+		return nil, errors.New("test release")
+	}
+
 	// The sender is ready to collect all the required signatures.
 	// In this case, the sender's and the auditor's signatures.
 	// Invoke the Token Chaincode to collect endorsements on the Token Request and prepare the relative Fabric transaction.
@@ -89,9 +97,30 @@ func (t *TransferView) Call(context view.Context) (interface{}, error) {
 	_, err = context.RunView(ttxcc.NewCollectEndorsementsView(tx))
 	assert.NoError(err, "failed to sign transaction")
 
+	// Sanity checks:
+	// - the transaction is in busy state in the vault
+	fns := fabric.GetFabricNetworkService(context, tx.Network())
+	ch, err := fns.Channel(tx.Channel())
+	assert.NoError(err, "failed to retrieve channel [%s]", tx.Channel())
+	vc, _, err := ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+
 	// Send to the ordering service and wait for finality
 	_, err = context.RunView(ttxcc.NewOrderingAndFinalityView(tx))
 	assert.NoError(err, "failed asking ordering")
+
+	// Sanity checks:
+	// - the transaction is in valid state in the vault
+	vc, _, err = ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in valid state", tx.ID())
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in busy state", tx.ID())
 
 	return tx.ID(), nil
 }
@@ -139,7 +168,7 @@ func (t *TransferWithSelectorView) Call(context view.Context) (interface{}, erro
 		// The sender tries to select the requested amount of tokens of the passed type.
 		// If a failure happens, the sender retries up to 5 times, waiting 10 seconds after each failure.
 		// This is just an example, any other policy can be implemented.
-		var ids []*token.Id
+		var ids []*token.ID
 		var sum token.Quantity
 
 		for i := 0; i < 5; i++ {
@@ -220,6 +249,18 @@ func (t *TransferWithSelectorView) Call(context view.Context) (interface{}, erro
 	_, err = context.RunView(ttxcc.NewCollectEndorsementsView(tx))
 	assert.NoError(err, "failed to sign transaction")
 
+	// Sanity checks:
+	// - the transaction is in busy state in the vault
+	fns := fabric.GetFabricNetworkService(context, tx.Network())
+	ch, err := fns.Channel(tx.Channel())
+	assert.NoError(err, "failed to retrieve channel [%s]", tx.Channel())
+	vc, _, err := ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Busy, vc, "transaction [%s] should be in busy state", tx.ID())
+
 	if !t.Retry {
 		// Introduce a delay that will keep the tokens locked by the selector
 		time.Sleep(20 * time.Second)
@@ -228,6 +269,15 @@ func (t *TransferWithSelectorView) Call(context view.Context) (interface{}, erro
 	// Send to the ordering service and wait for finality
 	_, err = context.RunView(ttxcc.NewOrderingAndFinalityView(tx))
 	assert.NoError(err, "failed asking ordering")
+
+	// Sanity checks:
+	// - the transaction is in valid state in the vault
+	vc, _, err = ch.Vault().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in valid state", tx.ID())
+	vc, _, err = ch.Committer().Status(tx.ID())
+	assert.NoError(err, "failed to retrieve vault status for transaction [%s]", tx.ID())
+	assert.Equal(fabric.Valid, vc, "transaction [%s] should be in busy state", tx.ID())
 
 	return tx.ID(), nil
 }

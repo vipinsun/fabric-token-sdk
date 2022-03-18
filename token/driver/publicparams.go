@@ -5,15 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 */
 package driver
 
-import "encoding/json"
-
 type SerializedPublicParameters struct {
 	Identifier string
 	Raw        []byte
 }
 
 func (pp *SerializedPublicParameters) Deserialize(raw []byte) error {
-	if err := json.Unmarshal(raw, pp); err != nil {
+	if err := Unmarshal(raw, pp); err != nil {
 		return err
 	}
 	return nil
@@ -33,13 +31,7 @@ type PublicParameters interface {
 }
 
 type PublicParamsManager interface {
-	SetAuditor(auditor []byte) ([]byte, error)
-
-	AddIssuer(bytes []byte) ([]byte, error)
-
 	PublicParameters() PublicParameters
-
-	SetCertifier(certifier []byte) ([]byte, error)
 
 	NewCertifierKeyPair() ([]byte, []byte, error)
 

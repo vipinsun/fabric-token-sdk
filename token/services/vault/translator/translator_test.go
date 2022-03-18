@@ -8,12 +8,13 @@ package translator_test
 import (
 	"strconv"
 
-	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/keys"
-	writer2 "github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/translator"
-	mock "github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/translator/mock"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
+
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/keys"
+	writer2 "github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/translator"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/translator/mock"
 )
 
 const (
@@ -280,7 +281,7 @@ var _ = Describe("Translator", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("already spent"))
 				Expect(fakeRWSet.GetStateCallCount()).To(Equal(3))
-				ns, snkey, _ := fakeRWSet.GetStateArgsForCall(2)
+				ns, snkey := fakeRWSet.GetStateArgsForCall(2)
 				Expect(ns).To(Equal(tokenNameSpace))
 				Expect(snkey).To(Equal(sn[2]))
 			})
@@ -302,7 +303,7 @@ var _ = Describe("Translator", func() {
 	Describe("Commit Token Request", func() {
 		When("set state succeeds", func() {
 			It("succeeds", func() {
-				err := writer.CommitTokenRequest([]byte("token request"))
+				err := writer.CommitTokenRequest([]byte("token request"), false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(fakeRWSet.SetStateCallCount()).To(Equal(1))
 
@@ -319,7 +320,7 @@ var _ = Describe("Translator", func() {
 				fakeRWSet.SetStateReturns(errors.New("space monkeys"))
 			})
 			It("commit token request fails", func() {
-				err := writer.CommitTokenRequest([]byte("token request"))
+				err := writer.CommitTokenRequest([]byte("token request"), false)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("space monkeys"))
 				Expect(fakeRWSet.SetStateCallCount()).To(Equal(1))
@@ -331,7 +332,7 @@ var _ = Describe("Translator", func() {
 				fakeRWSet.GetStateReturns(nil, errors.New("space cheetah"))
 			})
 			It("commit token request fails", func() {
-				err := writer.CommitTokenRequest([]byte("token request"))
+				err := writer.CommitTokenRequest([]byte("token request"), false)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("space cheetah"))
 				Expect(fakeRWSet.SetStateCallCount()).To(Equal(0))
@@ -343,7 +344,7 @@ var _ = Describe("Translator", func() {
 				fakeRWSet.GetStateReturns([]byte("occupied"), nil)
 			})
 			It("commit token request fails", func() {
-				err := writer.CommitTokenRequest([]byte("token request"))
+				err := writer.CommitTokenRequest([]byte("token request"), false)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("token request with same ID already exists"))
 				Expect(fakeRWSet.SetStateCallCount()).To(Equal(0))

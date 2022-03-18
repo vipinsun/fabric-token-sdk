@@ -3,6 +3,7 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package interactive
 
 import (
@@ -11,13 +12,12 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 
 	"github.com/hyperledger-labs/fabric-token-sdk/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/certifier/driver"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/network"
 )
 
 type Driver struct {
@@ -33,32 +33,31 @@ func NewDriver() *Driver {
 	}
 }
 
-func (d *Driver) NewCertificationClient(sp view2.ServiceProvider, network, channel, namespace string) (driver.CertificationClient, error) {
+func (d *Driver) NewCertificationClient(sp view2.ServiceProvider, networkID, channel, namespace string) (driver.CertificationClient, error) {
 	d.sync.Lock()
 	defer d.sync.Unlock()
 
 	k := channel + ":" + namespace
 	cm, ok := d.cms[k]
 	if !ok {
-		ch := fabric.GetChannel(sp, network, channel)
-		fabricVault := ch.Vault()
-		tokenVault := vault.NewVault(sp, ch, namespace)
+		n := network.GetInstance(sp, networkID, channel)
+		if n == nil {
+			return nil, errors.Errorf("network [%s] not found", networkID)
+		}
+		v, err := n.Vault(namespace)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get vault for network [%s:%s]", networkID, channel)
+		}
 
 		// Load certifier identities
-		var tmsConfigs []*token.TMS
-		if err := view2.GetConfigService(sp).UnmarshalKey("token.tms", &tmsConfigs); err != nil {
-			return nil, errors.WithMessagef(err, "cannot load token-sdk configuration")
+		tms := token.GetManagementService(sp, token.WithTMS(networkID, channel, namespace))
+		if tms == nil {
+			return nil, errors.Errorf("failed to get token management service for network [%s:%s:%s]", networkID, channel, namespace)
 		}
 		var certifiers []view.Identity
-		for _, tms := range tmsConfigs {
-			if tms.Channel == channel && tms.Namespace == namespace {
-				var err error
-				certifiers, err = view2.GetEndpointService(sp).ResolveIdentities(tms.Certification.Interactive.IDs...)
-				if err != nil {
-					return nil, errors.WithMessagef(err, "cannot resolve certifier identities")
-				}
-				break
-			}
+		certifiers, err = view2.GetEndpointService(sp).ResolveIdentities(tms.ConfigManager().Certifiers()...)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "cannot resolve certifier identities")
 		}
 		if len(certifiers) == 0 {
 			return nil, errors.Errorf("no certifier id configured")
@@ -68,9 +67,9 @@ func (d *Driver) NewCertificationClient(sp view2.ServiceProvider, network, chann
 			context.Background(),
 			channel,
 			namespace,
-			fabricVault,
-			tokenVault.QueryEngine(),
-			tokenVault.CertificationStorage(),
+			v,
+			v,
+			v,
 			view2.GetManager(sp),
 			certifiers,
 		)

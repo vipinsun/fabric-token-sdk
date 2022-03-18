@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/assert"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 
@@ -30,10 +29,23 @@ func (a *AuditView) Call(context view.Context) (interface{}, error) {
 	auditor := ttxcc.NewAuditor(context, w)
 	assert.NoError(auditor.Validate(tx), "failed auditing verification")
 
+	// Check Metadata
+	opRaw := tx.ApplicationMetadata("github.com/hyperledger-labs/fabric-token-sdk/integration/token/tcc/basic/issue")
+	if len(opRaw) != 0 {
+		assert.Equal([]byte("issue"), opRaw, "expected 'issue' application metadata")
+		metaRaw := tx.ApplicationMetadata("github.com/hyperledger-labs/fabric-token-sdk/integration/token/tcc/basic/meta")
+		assert.Equal([]byte("meta"), metaRaw, "expected 'meta' application metadata")
+	}
+
 	// Check limits
 
+	// extract inputs and outputs
 	inputs, outputs, err := auditor.Audit(tx)
 	assert.NoError(err, "failed retrieving inputs and outputs")
+
+	// acquire locks on inputs and outputs' enrollment IDs
+	assert.NoError(auditor.AcquireLocks(append(inputs.EnrollmentIDs(), outputs.EnrollmentIDs()...)...), "failed acquiring locks")
+	defer auditor.Unlock(append(inputs.EnrollmentIDs(), outputs.EnrollmentIDs()...))
 
 	aqe := auditor.NewQueryExecutor()
 	defer aqe.Done()
@@ -43,6 +55,7 @@ func (a *AuditView) Call(context view.Context) (interface{}, error) {
 	tokenTypes := inputs.TokenTypes()
 	fmt.Printf("Limits on inputs [%v][%v]\n", eIDs, tokenTypes)
 	for _, eID := range eIDs {
+		assert.NotEmpty(eID, "enrollment id should not be empty")
 		for _, tokenType := range tokenTypes {
 			// compute the payment done in the transaction
 			sent := inputs.ByEnrollmentID(eID).ByType(tokenType).Sum().ToBigInt()
@@ -62,6 +75,7 @@ func (a *AuditView) Call(context view.Context) (interface{}, error) {
 
 	// R2: Default cumulative payment limit is set to 2000.
 	for _, eID := range eIDs {
+		assert.NotEmpty(eID, "enrollment id should not be empty")
 		for _, tokenType := range tokenTypes {
 			// compute the payment done in the transaction
 			sent := inputs.ByEnrollmentID(eID).ByType(tokenType).Sum().ToBigInt()
@@ -90,6 +104,7 @@ func (a *AuditView) Call(context view.Context) (interface{}, error) {
 	eIDs = outputs.EnrollmentIDs()
 	tokenTypes = outputs.TokenTypes()
 	for _, eID := range eIDs {
+		assert.NotEmpty(eID, "enrollment id should not be empty")
 		for _, tokenType := range tokenTypes {
 			// compute the amount received
 			received := outputs.ByEnrollmentID(eID).ByType(tokenType).Sum().ToBigInt()
@@ -123,7 +138,6 @@ type RegisterAuditorView struct{}
 
 func (r *RegisterAuditorView) Call(context view.Context) (interface{}, error) {
 	return context.RunView(ttxcc.NewRegisterAuditorView(
-		fabric.GetDefaultIdentityProvider(context).DefaultIdentity(),
 		&AuditView{},
 	))
 }

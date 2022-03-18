@@ -6,14 +6,14 @@ SPDX-License-Identifier: Apache-2.0
 package tcc
 
 import (
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/chaincode"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/pkg/errors"
+
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/network"
 )
 
 var logger = flogging.MustGetLogger("token-sdk.tms.zkat.fetcher")
-
-const QueryPublicParamsFunction = "queryPublicParams"
 
 type publicParamsFetcher struct {
 	sp        view.ServiceProvider
@@ -33,15 +33,10 @@ func NewPublicParamsFetcher(sp view.ServiceProvider, network string, channel str
 
 func (c *publicParamsFetcher) Fetch() ([]byte, error) {
 	logger.Debugf("retrieve public params for [%s:%s:%s]", c.network, c.channel, c.namespace)
-
-	ppBoxed, err := view.GetManager(c.sp).InitiateView(
-		chaincode.NewQueryView(
-			c.namespace,
-			QueryPublicParamsFunction,
-		).WithNetwork(c.network).WithChannel(c.channel),
-	)
-	if err != nil {
-		return nil, err
+	n := network.GetInstance(c.sp, c.network, c.channel)
+	if n == nil {
+		return nil, errors.Errorf("network [%s:%s] does not exist", c.network, c.channel)
 	}
-	return ppBoxed.([]byte), nil
+
+	return n.FetchPublicParameters(c.namespace)
 }

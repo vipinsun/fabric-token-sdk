@@ -8,62 +8,51 @@ package nogh
 import (
 	"sync"
 
-	"github.com/pkg/errors"
-
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/math/gurvy/bn256"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/ppm"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/token"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/crypto/validator"
 	api3 "github.com/hyperledger-labs/fabric-token-sdk/token/driver"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/keys"
 	token3 "github.com/hyperledger-labs/fabric-token-sdk/token/token"
 )
 
-const (
-	info = "info"
-)
-
-type Channel interface {
-	Name() string
-	Vault() *fabric.Vault
-}
-
 type TokenCommitmentLoader interface {
-	GetTokenCommitments(ids []*token3.Id) ([]*token.Token, error)
+	GetTokenCommitments(ids []*token3.ID) ([]*token.Token, error)
 }
 
 type QueryEngine interface {
-	IsMine(id *token3.Id) (bool, error)
+	IsMine(id *token3.ID) (bool, error)
 	ListUnspentTokens() (*token3.UnspentTokens, error)
-	ListAuditTokens(ids ...*token3.Id) ([]*token3.Token, error)
+	ListAuditTokens(ids ...*token3.ID) ([]*token3.Token, error)
 	ListHistoryIssuedTokens() (*token3.IssuedTokens, error)
 }
 
-type DeserializerProvider = func(params *crypto.PublicParams) (api3.Deserializer, error)
+type TokenLoader interface {
+	LoadTokens(ids []*token3.ID) ([]string, []*token.Token, []*token.TokenInformation, []view.Identity, error)
+}
+
+type PublicParametersManager interface {
+	api3.PublicParamsManager
+	PublicParams() *crypto.PublicParams
+}
+
+type DeserializerProviderFunc = func(params *crypto.PublicParams) (api3.Deserializer, error)
 
 type Service struct {
-	Channel               Channel
+	Channel               string
 	Namespace             string
 	SP                    view2.ServiceProvider
 	PP                    *crypto.PublicParams
+	PPM                   PublicParametersManager
 	PPLabel               string
 	PublicParamsFetcher   api3.PublicParamsFetcher
+	TokenLoader           TokenLoader
 	TokenCommitmentLoader TokenCommitmentLoader
 	QE                    QueryEngine
-	DeserializerProvider  DeserializerProvider
-
-	Issuers []*struct {
-		label string
-		index int
-		sk    *bn256.Zr
-		pk    *bn256.G1
-		fID   view.Identity
-	}
+	DeserializerProvider  DeserializerProviderFunc
+	CM                    api3.ConfigManager
 
 	identityProvider api3.IdentityProvider
 	OwnerWallets     []*wallet
@@ -73,26 +62,30 @@ type Service struct {
 }
 
 func NewTokenService(
-	channel Channel,
+	channel string,
 	namespace string,
 	sp view2.ServiceProvider,
-	publicParamsFetcher api3.PublicParamsFetcher,
+	PPM PublicParametersManager,
+	tokenLoader TokenLoader,
 	tokenCommitmentLoader TokenCommitmentLoader,
 	queryEngine QueryEngine,
 	identityProvider api3.IdentityProvider,
-	deserializerProvider DeserializerProvider,
+	deserializerProvider DeserializerProviderFunc,
 	ppLabel string,
+	cm api3.ConfigManager,
 ) (*Service, error) {
 	s := &Service{
 		Channel:               channel,
 		Namespace:             namespace,
 		SP:                    sp,
-		PublicParamsFetcher:   publicParamsFetcher,
+		PPM:                   PPM,
+		TokenLoader:           tokenLoader,
 		TokenCommitmentLoader: tokenCommitmentLoader,
 		QE:                    queryEngine,
 		identityProvider:      identityProvider,
 		DeserializerProvider:  deserializerProvider,
 		PPLabel:               ppLabel,
+		CM:                    cm,
 	}
 	return s, nil
 }
@@ -133,75 +126,19 @@ func (s *Service) Validator() api3.Validator {
 }
 
 func (s *Service) PublicParamsManager() api3.PublicParamsManager {
-	return ppm.New(s.PublicParams())
+	return s.PPM
+}
+
+func (s *Service) ConfigManager() api3.ConfigManager {
+	return s.CM
 }
 
 func (s *Service) PublicParams() *crypto.PublicParams {
-	if s.PP == nil {
-		// load
-		qe, err := s.Channel.Vault().NewQueryExecutor()
-		if err != nil {
-			panic(err)
-		}
-		defer qe.Done()
-
-		setupKey, err := keys.CreateSetupKey()
-		if err != nil {
-			panic(err)
-		}
-		logger.Debugf("get public parameters with key [%s]", setupKey)
-		raw, err := qe.GetState(s.Namespace, setupKey)
-		if err != nil {
-			panic(err)
-		}
-		if len(raw) == 0 {
-			logger.Warnf("public parameters with key [%s] not found, fetch them", setupKey)
-			raw, err = s.PublicParamsFetcher.Fetch()
-			if err != nil {
-				logger.Errorf("failed retrieving public params [%s]", err)
-				return nil
-			}
-		}
-
-		logger.Debugf("unmarshal public parameters with key [%s], len [%d]", setupKey, len(raw))
-		s.PP = &crypto.PublicParams{}
-		s.PP.Label = s.PPLabel
-		err = s.PP.Deserialize(raw)
-		if err != nil {
-			panic(err)
-		}
-		logger.Debugf("unmarshal public parameters with key [%s] done", setupKey)
-	}
-
-	ip, err := s.PP.GetIssuingPolicy()
-	if err != nil {
-		panic(err)
-	}
-	logger.Debugf("returning public parameters [%d,%d,%d,%d]", len(s.PP.ZKATPedParams), len(ip.Issuers), ip.IssuersNumber, ip.BitLength)
-
-	return s.PP
+	return s.PPM.PublicParams()
 }
 
 func (s *Service) FetchPublicParams() error {
-	raw, err := s.PublicParamsFetcher.Fetch()
-	if err != nil {
-		return errors.WithMessagef(err, "failed fetching public params from fabric")
-	}
-
-	pp := &crypto.PublicParams{}
-	err = pp.Deserialize(raw)
-	if err != nil {
-		return errors.Wrapf(err, "failed deserializing public params")
-	}
-
-	ip, err := pp.GetIssuingPolicy()
-	if err != nil {
-		return errors.Wrapf(err, "failed deserializing issuing policy")
-	}
-	logger.Debugf("fetching public parameters done, issue policy [%d,%d,%d]", len(ip.Issuers), ip.IssuersNumber, ip.BitLength)
-
-	s.PP = pp
-	return nil
+	return s.PPM.ForceFetch()
 }
 
 func (s *Service) Deserializer() (api3.Deserializer, error) {

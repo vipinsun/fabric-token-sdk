@@ -3,44 +3,36 @@ Copyright IBM Corp. All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
+
 package core
 
 import (
 	"sync"
 
-	"github.com/pkg/errors"
-
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/pkg/errors"
 
 	api2 "github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 )
 
+var logger = flogging.MustGetLogger("token-sdk.core")
+
 type CallbackFunc func(network, channel, namespace string) error
 
-type Network interface {
-	Channel(name string) (*fabric.Channel, error)
-}
-
-type NetworkProvider interface {
-	Network(network string) (Network, error)
-}
-
 type tmsProvider struct {
-	networkProvider NetworkProvider
-	sp              view2.ServiceProvider
-	callbackFunc    CallbackFunc
+	sp           view2.ServiceProvider
+	callbackFunc CallbackFunc
 
 	lock     sync.Mutex
 	services map[string]api2.TokenManagerService
 }
 
-func NewTMSProvider(networkProvider NetworkProvider, sp view2.ServiceProvider, callbackFunc CallbackFunc) *tmsProvider {
+func NewTMSProvider(sp view2.ServiceProvider, callbackFunc CallbackFunc) *tmsProvider {
 	ms := &tmsProvider{
-		networkProvider: networkProvider,
-		sp:              sp,
-		callbackFunc:    callbackFunc,
-		services:        map[string]api2.TokenManagerService{},
+		sp:           sp,
+		callbackFunc: callbackFunc,
+		services:     map[string]api2.TokenManagerService{},
 	}
 	return ms
 }
@@ -65,6 +57,7 @@ func (m *tmsProvider) GetTokenManagerService(network string, channel string, nam
 	key := network + channel + namespace
 	service, ok := m.services[key]
 	if !ok {
+		logger.Debugf("creating new token manager service for network %s, channel %s, namespace %s", network, channel, namespace)
 		var err error
 		service, err = m.newTMS(network, channel, namespace, publicParamsFetcher)
 		if err != nil {
@@ -88,16 +81,9 @@ func (m *tmsProvider) newTMS(networkID string, channel string, namespace string,
 	if !ok {
 		return nil, errors.Errorf("failed instantiate token service, driver [%s] not found", pp.Identifier)
 	}
+	logger.Debugf("instantiating token service for network [%s], channel [%s], namespace [%s], with driver identifier [%s]", networkID, channel, namespace, pp.Identifier)
 
-	network, err := m.networkProvider.Network(networkID)
-	if err != nil {
-		return nil, errors.Wrapf(err, "faile getting network [%s]", channel)
-	}
-	ch, err := network.Channel(channel)
-	if err != nil {
-		return nil, errors.Wrapf(err, "faile getting channel [%s]", channel)
-	}
-	ts, err := d.NewTokenService(m.sp, publicParamsFetcher, networkID, ch, namespace)
+	ts, err := d.NewTokenService(m.sp, publicParamsFetcher, networkID, channel, namespace)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed instantiating token service")
 	}

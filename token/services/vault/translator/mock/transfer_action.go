@@ -20,6 +20,16 @@ type TransferAction struct {
 		result1 []string
 		result2 error
 	}
+	GetMetadataStub        func() []byte
+	getMetadataMutex       sync.RWMutex
+	getMetadataArgsForCall []struct {
+	}
+	getMetadataReturns struct {
+		result1 []byte
+	}
+	getMetadataReturnsOnCall map[int]struct {
+		result1 []byte
+	}
 	GetSerializedOutputsStub        func() ([][]byte, error)
 	getSerializedOutputsMutex       sync.RWMutex
 	getSerializedOutputsArgsForCall []struct {
@@ -97,15 +107,16 @@ func (fake *TransferAction) GetInputs() ([]string, error) {
 	ret, specificReturn := fake.getInputsReturnsOnCall[len(fake.getInputsArgsForCall)]
 	fake.getInputsArgsForCall = append(fake.getInputsArgsForCall, struct {
 	}{})
+	stub := fake.GetInputsStub
+	fakeReturns := fake.getInputsReturns
 	fake.recordInvocation("GetInputs", []interface{}{})
 	fake.getInputsMutex.Unlock()
-	if fake.GetInputsStub != nil {
-		return fake.GetInputsStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.getInputsReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 
@@ -147,20 +158,74 @@ func (fake *TransferAction) GetInputsReturnsOnCall(i int, result1 []string, resu
 	}{result1, result2}
 }
 
+func (fake *TransferAction) GetMetadata() []byte {
+	fake.getMetadataMutex.Lock()
+	ret, specificReturn := fake.getMetadataReturnsOnCall[len(fake.getMetadataArgsForCall)]
+	fake.getMetadataArgsForCall = append(fake.getMetadataArgsForCall, struct {
+	}{})
+	stub := fake.GetMetadataStub
+	fakeReturns := fake.getMetadataReturns
+	fake.recordInvocation("GetMetadata", []interface{}{})
+	fake.getMetadataMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *TransferAction) GetMetadataCallCount() int {
+	fake.getMetadataMutex.RLock()
+	defer fake.getMetadataMutex.RUnlock()
+	return len(fake.getMetadataArgsForCall)
+}
+
+func (fake *TransferAction) GetMetadataCalls(stub func() []byte) {
+	fake.getMetadataMutex.Lock()
+	defer fake.getMetadataMutex.Unlock()
+	fake.GetMetadataStub = stub
+}
+
+func (fake *TransferAction) GetMetadataReturns(result1 []byte) {
+	fake.getMetadataMutex.Lock()
+	defer fake.getMetadataMutex.Unlock()
+	fake.GetMetadataStub = nil
+	fake.getMetadataReturns = struct {
+		result1 []byte
+	}{result1}
+}
+
+func (fake *TransferAction) GetMetadataReturnsOnCall(i int, result1 []byte) {
+	fake.getMetadataMutex.Lock()
+	defer fake.getMetadataMutex.Unlock()
+	fake.GetMetadataStub = nil
+	if fake.getMetadataReturnsOnCall == nil {
+		fake.getMetadataReturnsOnCall = make(map[int]struct {
+			result1 []byte
+		})
+	}
+	fake.getMetadataReturnsOnCall[i] = struct {
+		result1 []byte
+	}{result1}
+}
+
 func (fake *TransferAction) GetSerializedOutputs() ([][]byte, error) {
 	fake.getSerializedOutputsMutex.Lock()
 	ret, specificReturn := fake.getSerializedOutputsReturnsOnCall[len(fake.getSerializedOutputsArgsForCall)]
 	fake.getSerializedOutputsArgsForCall = append(fake.getSerializedOutputsArgsForCall, struct {
 	}{})
+	stub := fake.GetSerializedOutputsStub
+	fakeReturns := fake.getSerializedOutputsReturns
 	fake.recordInvocation("GetSerializedOutputs", []interface{}{})
 	fake.getSerializedOutputsMutex.Unlock()
-	if fake.GetSerializedOutputsStub != nil {
-		return fake.GetSerializedOutputsStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.getSerializedOutputsReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 
@@ -207,15 +272,16 @@ func (fake *TransferAction) IsGraphHiding() bool {
 	ret, specificReturn := fake.isGraphHidingReturnsOnCall[len(fake.isGraphHidingArgsForCall)]
 	fake.isGraphHidingArgsForCall = append(fake.isGraphHidingArgsForCall, struct {
 	}{})
+	stub := fake.IsGraphHidingStub
+	fakeReturns := fake.isGraphHidingReturns
 	fake.recordInvocation("IsGraphHiding", []interface{}{})
 	fake.isGraphHidingMutex.Unlock()
-	if fake.IsGraphHidingStub != nil {
-		return fake.IsGraphHidingStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.isGraphHidingReturns
 	return fakeReturns.result1
 }
 
@@ -260,15 +326,16 @@ func (fake *TransferAction) IsRedeemAt(arg1 int) bool {
 	fake.isRedeemAtArgsForCall = append(fake.isRedeemAtArgsForCall, struct {
 		arg1 int
 	}{arg1})
+	stub := fake.IsRedeemAtStub
+	fakeReturns := fake.isRedeemAtReturns
 	fake.recordInvocation("IsRedeemAt", []interface{}{arg1})
 	fake.isRedeemAtMutex.Unlock()
-	if fake.IsRedeemAtStub != nil {
-		return fake.IsRedeemAtStub(arg1)
+	if stub != nil {
+		return stub(arg1)
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.isRedeemAtReturns
 	return fakeReturns.result1
 }
 
@@ -319,15 +386,16 @@ func (fake *TransferAction) NumOutputs() int {
 	ret, specificReturn := fake.numOutputsReturnsOnCall[len(fake.numOutputsArgsForCall)]
 	fake.numOutputsArgsForCall = append(fake.numOutputsArgsForCall, struct {
 	}{})
+	stub := fake.NumOutputsStub
+	fakeReturns := fake.numOutputsReturns
 	fake.recordInvocation("NumOutputs", []interface{}{})
 	fake.numOutputsMutex.Unlock()
-	if fake.NumOutputsStub != nil {
-		return fake.NumOutputsStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.numOutputsReturns
 	return fakeReturns.result1
 }
 
@@ -371,15 +439,16 @@ func (fake *TransferAction) Serialize() ([]byte, error) {
 	ret, specificReturn := fake.serializeReturnsOnCall[len(fake.serializeArgsForCall)]
 	fake.serializeArgsForCall = append(fake.serializeArgsForCall, struct {
 	}{})
+	stub := fake.SerializeStub
+	fakeReturns := fake.serializeReturns
 	fake.recordInvocation("Serialize", []interface{}{})
 	fake.serializeMutex.Unlock()
-	if fake.SerializeStub != nil {
-		return fake.SerializeStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.serializeReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 
@@ -427,15 +496,16 @@ func (fake *TransferAction) SerializeOutputAt(arg1 int) ([]byte, error) {
 	fake.serializeOutputAtArgsForCall = append(fake.serializeOutputAtArgsForCall, struct {
 		arg1 int
 	}{arg1})
+	stub := fake.SerializeOutputAtStub
+	fakeReturns := fake.serializeOutputAtReturns
 	fake.recordInvocation("SerializeOutputAt", []interface{}{arg1})
 	fake.serializeOutputAtMutex.Unlock()
-	if fake.SerializeOutputAtStub != nil {
-		return fake.SerializeOutputAtStub(arg1)
+	if stub != nil {
+		return stub(arg1)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.serializeOutputAtReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 
@@ -489,6 +559,8 @@ func (fake *TransferAction) Invocations() map[string][][]interface{} {
 	defer fake.invocationsMutex.RUnlock()
 	fake.getInputsMutex.RLock()
 	defer fake.getInputsMutex.RUnlock()
+	fake.getMetadataMutex.RLock()
+	defer fake.getMetadataMutex.RUnlock()
 	fake.getSerializedOutputsMutex.RLock()
 	defer fake.getSerializedOutputsMutex.RUnlock()
 	fake.isGraphHidingMutex.RLock()

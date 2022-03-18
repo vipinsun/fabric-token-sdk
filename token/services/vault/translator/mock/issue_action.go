@@ -81,15 +81,16 @@ func (fake *IssueAction) GetIssuer() []byte {
 	ret, specificReturn := fake.getIssuerReturnsOnCall[len(fake.getIssuerArgsForCall)]
 	fake.getIssuerArgsForCall = append(fake.getIssuerArgsForCall, struct {
 	}{})
+	stub := fake.GetIssuerStub
+	fakeReturns := fake.getIssuerReturns
 	fake.recordInvocation("GetIssuer", []interface{}{})
 	fake.getIssuerMutex.Unlock()
-	if fake.GetIssuerStub != nil {
-		return fake.GetIssuerStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.getIssuerReturns
 	return fakeReturns.result1
 }
 
@@ -133,15 +134,16 @@ func (fake *IssueAction) GetMetadata() []byte {
 	ret, specificReturn := fake.getMetadataReturnsOnCall[len(fake.getMetadataArgsForCall)]
 	fake.getMetadataArgsForCall = append(fake.getMetadataArgsForCall, struct {
 	}{})
+	stub := fake.GetMetadataStub
+	fakeReturns := fake.getMetadataReturns
 	fake.recordInvocation("GetMetadata", []interface{}{})
 	fake.getMetadataMutex.Unlock()
-	if fake.GetMetadataStub != nil {
-		return fake.GetMetadataStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.getMetadataReturns
 	return fakeReturns.result1
 }
 
@@ -185,15 +187,16 @@ func (fake *IssueAction) GetSerializedOutputs() ([][]byte, error) {
 	ret, specificReturn := fake.getSerializedOutputsReturnsOnCall[len(fake.getSerializedOutputsArgsForCall)]
 	fake.getSerializedOutputsArgsForCall = append(fake.getSerializedOutputsArgsForCall, struct {
 	}{})
+	stub := fake.GetSerializedOutputsStub
+	fakeReturns := fake.getSerializedOutputsReturns
 	fake.recordInvocation("GetSerializedOutputs", []interface{}{})
 	fake.getSerializedOutputsMutex.Unlock()
-	if fake.GetSerializedOutputsStub != nil {
-		return fake.GetSerializedOutputsStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.getSerializedOutputsReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 
@@ -240,15 +243,16 @@ func (fake *IssueAction) IsAnonymous() bool {
 	ret, specificReturn := fake.isAnonymousReturnsOnCall[len(fake.isAnonymousArgsForCall)]
 	fake.isAnonymousArgsForCall = append(fake.isAnonymousArgsForCall, struct {
 	}{})
+	stub := fake.IsAnonymousStub
+	fakeReturns := fake.isAnonymousReturns
 	fake.recordInvocation("IsAnonymous", []interface{}{})
 	fake.isAnonymousMutex.Unlock()
-	if fake.IsAnonymousStub != nil {
-		return fake.IsAnonymousStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.isAnonymousReturns
 	return fakeReturns.result1
 }
 
@@ -292,15 +296,16 @@ func (fake *IssueAction) NumOutputs() int {
 	ret, specificReturn := fake.numOutputsReturnsOnCall[len(fake.numOutputsArgsForCall)]
 	fake.numOutputsArgsForCall = append(fake.numOutputsArgsForCall, struct {
 	}{})
+	stub := fake.NumOutputsStub
+	fakeReturns := fake.numOutputsReturns
 	fake.recordInvocation("NumOutputs", []interface{}{})
 	fake.numOutputsMutex.Unlock()
-	if fake.NumOutputsStub != nil {
-		return fake.NumOutputsStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.numOutputsReturns
 	return fakeReturns.result1
 }
 
@@ -344,15 +349,16 @@ func (fake *IssueAction) Serialize() ([]byte, error) {
 	ret, specificReturn := fake.serializeReturnsOnCall[len(fake.serializeArgsForCall)]
 	fake.serializeArgsForCall = append(fake.serializeArgsForCall, struct {
 	}{})
+	stub := fake.SerializeStub
+	fakeReturns := fake.serializeReturns
 	fake.recordInvocation("Serialize", []interface{}{})
 	fake.serializeMutex.Unlock()
-	if fake.SerializeStub != nil {
-		return fake.SerializeStub()
+	if stub != nil {
+		return stub()
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	fakeReturns := fake.serializeReturns
 	return fakeReturns.result1, fakeReturns.result2
 }
 

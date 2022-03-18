@@ -10,6 +10,10 @@ import (
 	tokenapi "github.com/hyperledger-labs/fabric-token-sdk/token/driver"
 )
 
+var (
+	managementServiceProviderIndex = &ManagementServiceProvider{}
+)
+
 type Normalizer interface {
 	Normalize(opt *ServiceOptions) *ServiceOptions
 }
@@ -38,7 +42,6 @@ type ManagementServiceProvider struct {
 	certificationClientProvider CertificationClientProvider
 	selectorManagerProvider     SelectorManagerProvider
 	vaultProvider               VaultProvider
-	signerService               tokenapi.SignerService
 }
 
 func NewManagementServiceProvider(
@@ -48,7 +51,6 @@ func NewManagementServiceProvider(
 	vaultProvider VaultProvider,
 	certificationClientProvider CertificationClientProvider,
 	selectorManagerProvider SelectorManagerProvider,
-	signerService tokenapi.SignerService,
 ) *ManagementServiceProvider {
 	return &ManagementServiceProvider{
 		sp:                          sp,
@@ -57,7 +59,6 @@ func NewManagementServiceProvider(
 		vaultProvider:               vaultProvider,
 		certificationClientProvider: certificationClientProvider,
 		selectorManagerProvider:     selectorManagerProvider,
-		signerService:               signerService,
 	}
 }
 
@@ -91,12 +92,15 @@ func (p *ManagementServiceProvider) GetManagementService(opts ...ServiceOption) 
 		vaultProvider:               p.vaultProvider,
 		certificationClientProvider: p.certificationClientProvider,
 		selectorManagerProvider:     p.selectorManagerProvider,
-		signatureService:            &SignatureService{deserializer: tokenService, signerService: p.signerService},
+		signatureService: &SignatureService{
+			deserializer: tokenService,
+			ip:           tokenService.IdentityProvider(),
+		},
 	}
 }
 
 func GetManagementServiceProvider(sp ServiceProvider) *ManagementServiceProvider {
-	s, err := sp.GetService(&ManagementServiceProvider{})
+	s, err := sp.GetService(managementServiceProviderIndex)
 	if err != nil {
 		panic(err)
 	}

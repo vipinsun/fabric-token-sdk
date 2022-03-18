@@ -22,15 +22,16 @@ import (
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/core/fabtoken/driver"
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/core/zkatdlog/nogh/driver"
 	fabric2 "github.com/hyperledger-labs/fabric-token-sdk/token/sdk/fabric"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/sdk/view"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/auditor/auditdb"
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/services/auditor/auditdb/db/badger"
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/services/auditor/auditdb/db/memory"
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/services/certifier/dummy"
 	_ "github.com/hyperledger-labs/fabric-token-sdk/token/services/certifier/interactive"
+	"github.com/hyperledger-labs/fabric-token-sdk/token/services/network"
+	_ "github.com/hyperledger-labs/fabric-token-sdk/token/services/network/fabric"
+	fabric4 "github.com/hyperledger-labs/fabric-token-sdk/token/services/network/fabric"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/query"
 	"github.com/hyperledger-labs/fabric-token-sdk/token/services/selector"
-	"github.com/hyperledger-labs/fabric-token-sdk/token/services/vault/processor"
 )
 
 var logger = flogging.MustGetLogger("token-sdk")
@@ -39,10 +40,6 @@ type Registry interface {
 	GetService(v interface{}) (interface{}, error)
 
 	RegisterService(service interface{}) error
-}
-
-type Network interface {
-	Channel(name string) (*fabric.Channel, error)
 }
 
 type SDK struct {
@@ -63,18 +60,17 @@ func (p *SDK) Install() error {
 
 	logger.Infof("Set TMS Provider")
 	tmsProvider := core.NewTMSProvider(
-		fabric2.NewNetworkProvider(p.registry),
 		p.registry,
 		func(network, channel, namespace string) error {
 			n := fabric.GetFabricNetworkService(p.registry, network)
 			if err := n.ProcessorManager().AddProcessor(
 				namespace,
-				processor.NewTokenRWSetProcessor(
+				fabric4.NewTokenRWSetProcessor(
 					n,
 					namespace,
 					p.registry,
-					processor.NewOwnershipMultiplexer(&processor.WalletOwnership{}),
-					processor.NewIssuedMultiplexer(&processor.WalletIssued{}),
+					fabric4.NewOwnershipMultiplexer(&fabric4.WalletOwnership{}),
+					fabric4.NewIssuedMultiplexer(&fabric4.WalletIssued{}),
 				),
 			); err != nil {
 				return errors.Wrapf(err, "failed adding transaction processors")
@@ -90,13 +86,19 @@ func (p *SDK) Install() error {
 		fabric2.NewNormalizer(p.registry),
 		fabric2.NewVaultProvider(p.registry),
 		fabric2.NewCertificationClientProvider(p.registry),
-		selector.NewProvider(p.registry, fabric2.NewLockerProvider(
+		selector.NewProvider(
 			p.registry,
-			2*time.Second,
-			(5*time.Minute).Milliseconds(),
-		), 2, 5*time.Second),
-		view.NewSignerServiceWrapper(view2.GetSigService(p.registry)),
+			fabric2.NewLockerProvider(
+				p.registry,
+				2*time.Second,
+				(5*time.Minute).Milliseconds(),
+			),
+			2,
+			5*time.Second),
 	)))
+
+	// Network provider
+	assert.NoError(p.registry.RegisterService(network.NewProvider(p.registry)))
 
 	// AuditDB
 	driverName := view2.GetConfigService(p.registry).GetString("token.auditor.auditdb.persistence.type")

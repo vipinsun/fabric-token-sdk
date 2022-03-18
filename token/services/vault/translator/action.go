@@ -30,4 +30,9 @@ type TransferAction interface {
 	SerializeOutputAt(index int) ([]byte, error)
 	GetInputs() ([]string, error)
 	IsGraphHiding() bool
+	GetMetadata() []byte
+}
+
+type Signature interface {
+	Metadata() map[string][]byte
 }
